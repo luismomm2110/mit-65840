@@ -1,0 +1,4 @@
+Test: many clients ...
+  ... Passed -- t  3.4 nrpc 39280 ops 39280
+PASS
+ok  	6.5840/kvsrv	4.497s
