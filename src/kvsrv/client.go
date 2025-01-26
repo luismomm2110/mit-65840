@@ -7,6 +7,8 @@ import "math/big"
 type Clerk struct {
 	server *labrpc.ClientEnd
 	// You will have to modify this struct.
+	clientId  int64
+	requestId int64 // monotonically increasing
 }
 
 func nrand() int64 {
@@ -20,6 +22,8 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.server = server
 	// You'll have to add code here.
+	ck.clientId = nrand()
+	ck.requestId = 0
 	return ck
 }
 
@@ -36,9 +40,14 @@ func MakeClerk(server *labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	args := GetArgs{Key: key}
+	ck.requestId += 1
+	DPrintf("get key: %v, reequestId: %v, clientID %v", key, ck.requestId, ck.clientId)
+	ok := false
 	reply := GetReply{}
-	ck.server.Call("KVServer."+"Get", &args, &reply)
+	for !ok {
+		args := GetArgs{Key: key, ClientId: ck.clientId, RequestId: ck.requestId}
+		ok = ck.server.Call("KVServer."+"Get", &args, &reply)
+	}
 	return reply.Value
 }
 
@@ -61,18 +70,26 @@ func (ck *Clerk) PutAppend(key string, value string, op string) string {
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	DPrintf("put key: %v, value: %v", key, value)
-	args := PutAppendArgs{Key: key, Value: value}
+	ck.requestId += 1
+	DPrintf("put key: %v, value: %v , reequestId: %v, clientID %v", key, value, ck.requestId, ck.clientId)
 	reply := PutAppendReply{}
-	ck.server.Call("KVServer."+"Put", &args, &reply)
+	ok := false
+	for !ok {
+		args := PutAppendArgs{Key: key, Value: value, ClientId: ck.clientId, RequestId: ck.requestId}
+		ok = ck.server.Call("KVServer."+"Put", &args, &reply)
+	}
 }
 
 // Append value to key's value and return that value
 func (ck *Clerk) Append(key string, value string) string {
-	DPrintf("append key: %v, value: %v", key, value)
-	args := PutAppendArgs{Key: key, Value: value}
+	ck.requestId += 1
 	reply := PutAppendReply{}
-	ck.server.Call("KVServer."+"Append", &args, &reply)
-	DPrintf("append reply: %v", reply.Value)
+	ok := false
+	for !ok {
+		args := PutAppendArgs{Key: key, Value: value, ClientId: ck.clientId, RequestId: ck.requestId}
+		DPrintf("append key: %v, value: %v , reequestId: %v, clientID %v", key, value, ck.requestId, ck.clientId)
+		ok = ck.server.Call("KVServer."+"Append", &args, &reply)
+	}
+	DPrintf("append reply: %v, clientID %v, requestId %v", reply.Value, ck.clientId, ck.requestId)
 	return reply.Value
 }
