@@ -1,25 +1,25 @@
 Test: many clients ...
-  ... Passed -- t  4.7 nrpc 112350 ops 112350
+  ... Passed -- t  4.8 nrpc 110521 ops 110521
 Test: unreliable net, many clients ...
-  ... Passed -- t  3.3 nrpc  1116 ops  910
+  ... Passed -- t  3.2 nrpc  1129 ops  913
 Test: concurrent append to same key, unreliable ...
-  ... Passed -- t  0.3 nrpc    62 ops   52
+  ... Passed -- t  0.3 nrpc    79 ops   52
 Test: memory use get ...
-  ... Passed -- t  0.3 nrpc     5 ops    0
+  ... Passed -- t  0.4 nrpc     5 ops    0
 Test: memory use put ...
---- FAIL: TestMemPut2 (0.22s)
+--- FAIL: TestMemPut2 (0.15s)
     test_test.go:431: error: server using too much memory 10
 Test: memory use append ...
-  ... Passed -- t  0.5 nrpc     2 ops    0
+  ... Passed -- t  0.3 nrpc     2 ops    0
 Test: memory use many put clients ...
---- FAIL: TestMemPutManyClients (7.27s)
-    test_test.go:502: error: server using too much memory 34026648 141666352 (1076.40 per client)
+--- FAIL: TestMemPutManyClients (6.43s)
+    test_test.go:502: error: server using too much memory 34017344 141646872 (1076.30 per client)
 Test: memory use many get client ...
---- FAIL: TestMemGetManyClients (6.79s)
-    test_test.go:555: error: server using too much memory m0 34052616 m1 39263680 (52.11 per client)
+--- FAIL: TestMemGetManyClients (6.49s)
+    test_test.go:555: error: server using too much memory m0 34025024 m1 39240408 (52.15 per client)
 Test: memory use many appends ...
-2025/01/28 19:45:26 m0 383808 m1 2392432
-  ... Passed -- t  1.6 nrpc  1000 ops    0
+2025/01/28 19:56:56 m0 376488 m1 2380664
+  ... Passed -- t  1.7 nrpc  1000 ops    0
 FAIL
 exit status 1
-FAIL	6.5840/kvsrv	24.909s
+FAIL	6.5840/kvsrv	23.791s

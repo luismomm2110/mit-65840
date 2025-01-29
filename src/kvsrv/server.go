@@ -24,7 +24,6 @@ type KVServer struct {
 	values map[string]string
 	// Your definitions here.
 	lastRequestForClient map[int64]LastRequest
-	lastRequestPut       map[int64]LastRequest
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -43,16 +42,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	lastRequestFromClient := kv.lastRequestForClient[args.ClientId]
-	if args.RequestId <= lastRequestFromClient.requestId {
-		return
-	}
 	kv.values[args.Key] = args.Value
 	reply.Value = ""
-	lastRequestFromClient = LastRequest{requestId: args.RequestId, value: args.Value}
-	kv.lastRequestForClient[args.ClientId] = lastRequestFromClient
-	DPrintf("value: %v", len(kv.values[args.Key]))
-	DPrintf("lastRequestForClient: %v", len(kv.lastRequestForClient))
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
