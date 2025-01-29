@@ -29,14 +29,8 @@ type KVServer struct {
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	lastRequestFromClient := kv.lastRequestForClient[args.ClientId]
-	if args.RequestId <= lastRequestFromClient.requestId {
-		reply.Value = lastRequestFromClient.value
-		return
-	}
 	value := kv.values[args.Key]
 	reply.Value = value
-	kv.lastRequestForClient[args.ClientId] = lastRequestFromClient
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
