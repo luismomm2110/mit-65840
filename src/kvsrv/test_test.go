@@ -350,7 +350,7 @@ func TestUnreliableOneKey2(t *testing.T) {
 			nv := "x " + strconv.Itoa(me) + " " + strconv.Itoa(n) + " y"
 			ov := Append(cfg, myck, "k", nv, nil, -1)
 			n++
-			// log.Printf("%d: append nv %v ov %v\n", me, nv, ov)
+			//log.Printf("%d: append new value %v in old value %v\n", me, nv, ov)
 			if inHistory(nv, ov) {
 				t.Fatalf("error: nv %v in returned values\n%v\n", nv, ov)
 			}
