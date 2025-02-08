@@ -569,6 +569,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
 				if ok {
+					DPrintf("one(%v) index1 %v by server %v", cmd, index1, starts)
 					index = index1
 					break
 				}
