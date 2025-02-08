@@ -882,6 +882,10 @@ func (rf *Raft) getLogEntries(start int, end int) []LogEntry {
 }
 
 func (rf *Raft) getLogEntriesUntilEnd(end int) []LogEntry {
+	DPrintf("server %v getLogEntriesUntilEnd end %d len %d last included index %d", rf.me, end, len(rf.logs), rf.lastIncludedIndex)
+	if rf.lastIncludedIndex != 0 && end >= rf.lastIncludedIndex {
+		return []LogEntry{}
+	}
 	return rf.logs[:end]
 }
 
