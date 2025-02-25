@@ -119,9 +119,17 @@ type Raft struct {
 
 type RaftState struct {
 	// Define your Raft state fields here
-	Term int
-	Vote int
-	Log  []LogEntry
+	Term              int
+	Vote              int
+	Log               []LogEntry
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	//If, when the server comes back up, it reads the updated snapshot, but the outdated log,
+	//it may end up applying some log entries that are already contained within the snapshot.
+	//This happens since the commitIndex and lastApplied are not persisted, and so Raft doesn’t know that those log entries have already been applied.
+	//The fix for this is to introduce a piece of persistent state to Raft that records what “real” index the first entry in Raft’s persisted log corresponds to.
+	//This can then be compared to the loaded snapshot’s lastIncludedIndex to determine what elements at the head of the log to discard.
+	FirstLogIndex int
 }
 
 // return currentTerm and whether this server
@@ -148,6 +156,8 @@ func (rf *Raft) persist() {
 	raftState.Term = rf.currentTerm
 	raftState.Log = rf.logs
 	raftState.Vote = rf.votedFor
+	raftState.LastIncludedIndex = rf.lastIncludedIndex
+	raftState.LastIncludedTerm = rf.lastIncludedTerm
 	err := encoder.Encode(&raftState)
 	if err != nil {
 		panic("error encoding state")
@@ -172,6 +182,8 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.currentTerm = raftState.Term
 	rf.logs = raftState.Log
 	rf.votedFor = raftState.Vote
+	rf.lastIncludedIndex = raftState.LastIncludedIndex
+	rf.lastIncludedTerm = raftState.LastIncludedTerm
 }
 
 // RequestVote RPC arguments structure.
@@ -475,8 +487,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.mu.Unlock()
 	}()
 
-	// todo precisa resetar o contador e ver se é líder
-
 	if args.Term < rf.currentTerm {
 		DPrintf("server %v received install snapshot with term %d less than current term %d", rf.me, args.Term, rf.currentTerm)
 		reply.Term = rf.currentTerm
@@ -517,6 +527,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	//When a follower's Raft code receives an InstallSnapshot RPC, it can use the applyCh to send the snapshot to the service in an ApplyMsg.
 	rf.data = args.Data
 
+	rf.persist()
 	// apply the snapshot message
 	DPrintf("server %d sending snapshot to service", rf.me)
 	rf.applyCh <- ApplyMsg{
@@ -910,7 +921,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
-	// Your initialization code here (2A, 2B, 2C).
 	rf.state = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1
