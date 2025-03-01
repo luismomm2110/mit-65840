@@ -124,7 +124,7 @@ func (cfg *config) crash1(i int) {
 	rf := cfg.rafts[i]
 	if rf != nil {
 		cfg.mu.Unlock()
-		DPrintf("KILL %v", i)
+		DPrintf("KILLED IN TEST %v", i)
 		rf.Kill()
 		cfg.mu.Lock()
 		cfg.rafts[i] = nil
@@ -190,6 +190,7 @@ func (cfg *config) ingestSnap(i int, snapshot []byte, index int) string {
 	d := labgob.NewDecoder(r)
 	var lastIncludedIndex int
 	var xlog []interface{}
+	DPrintf("server %d ingestsnapshot index %d snapshot %v", i, index, snapshot)
 	if d.Decode(&lastIncludedIndex) != nil ||
 		d.Decode(&xlog) != nil {
 		log.Fatalf("snapshot decode error")
@@ -204,6 +205,7 @@ func (cfg *config) ingestSnap(i int, snapshot []byte, index int) string {
 		cfg.logs[i][j] = xlog[j]
 	}
 	cfg.lastApplied[i] = lastIncludedIndex
+	DPrintf("server %v ingestsnapshot lastIncludedIndex %v", i, lastIncludedIndex)
 	return ""
 }
 
@@ -220,13 +222,14 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 
 	for m := range applyCh {
 		err_msg := ""
+		DPrintf("server %v received apply msg %v", i, m)
 		if m.SnapshotValid {
 			cfg.mu.Lock()
 			err_msg = cfg.ingestSnap(i, m.Snapshot, m.SnapshotIndex)
 			cfg.mu.Unlock()
 		} else if m.CommandValid {
 			if m.CommandIndex != cfg.lastApplied[i]+1 {
-				err_msg = fmt.Sprintf("server %v apply out of order, expected index %v, got %v hey I crashed", i, cfg.lastApplied[i]+1, m.CommandIndex)
+				err_msg = fmt.Sprintf("server %v apply out of order, expected index %v, got %v", i, cfg.lastApplied[i]+1, m.CommandIndex)
 			}
 
 			if err_msg == "" {
@@ -241,7 +244,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 
 			cfg.mu.Lock()
 			cfg.lastApplied[i] = m.CommandIndex
-			DPrintf("LAST APPLIED %d", m.CommandIndex)
+			DPrintf("server %v lastApplied %v", i, cfg.lastApplied[i])
 			cfg.mu.Unlock()
 
 			if (m.CommandIndex+1)%SnapShotInterval == 0 {
@@ -301,7 +304,9 @@ func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
 		cfg.saved[i] = cfg.saved[i].Copy()
 
 		snapshot := cfg.saved[i].ReadSnapshot()
+		DPrintf("server %v after killed snapshot %v", i, snapshot)
 		if snapshot != nil && len(snapshot) > 0 {
+			DPrintf("server %v after killed have not null snaps %v", i, snapshot)
 			// mimic KV server and process snapshot now.
 			// ideally Raft should send it up on applyCh...
 			err := cfg.ingestSnap(i, snapshot, -1)

@@ -101,13 +101,14 @@ type Raft struct {
 	matchIndex []int
 
 	// other auxiliary states
-	state       State
-	voteCount   int
-	applyCh     chan ApplyMsg
-	winElectCh  chan bool
-	stepDownCh  chan bool
-	grantVoteCh chan bool
-	heartbeatCh chan bool
+	state         State
+	voteCount     int
+	applyCh       chan ApplyMsg
+	winElectCh    chan bool
+	stepDownCh    chan bool
+	grantVoteCh   chan bool
+	heartbeatCh   chan bool
+	firstLogIndex int // first log index after snapshot
 
 	// snapshot
 	lastIncludedIndex int
@@ -129,7 +130,8 @@ type RaftState struct {
 	//This happens since the commitIndex and lastApplied are not persisted, and so Raft doesn’t know that those log entries have already been applied.
 	//The fix for this is to introduce a piece of persistent state to Raft that records what “real” index the first entry in Raft’s persisted log corresponds to.
 	//This can then be compared to the loaded snapshot’s lastIncludedIndex to determine what elements at the head of the log to discard.
-	FirstLogIndex int
+	// TODO ver se precisa mesmo
+	//FirstLogIndex int
 }
 
 // return currentTerm and whether this server
@@ -158,11 +160,13 @@ func (rf *Raft) persist() {
 	raftState.Vote = rf.votedFor
 	raftState.LastIncludedIndex = rf.lastIncludedIndex
 	raftState.LastIncludedTerm = rf.lastIncludedTerm
+
 	err := encoder.Encode(&raftState)
 	if err != nil {
 		panic("error encoding state")
 	}
-	rf.persister.Save(buffer.Bytes(), rf.persister.ReadSnapshot())
+	rf.persister.Save(buffer.Bytes(), rf.data)
+	DPrintf("server %d persisted state with term %d lastIncludedIndex %d", rf.me, rf.currentTerm, rf.lastIncludedIndex)
 }
 
 // restore previously persisted state.
@@ -184,6 +188,9 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.votedFor = raftState.Vote
 	rf.lastIncludedIndex = raftState.LastIncludedIndex
 	rf.lastIncludedTerm = raftState.LastIncludedTerm
+	rf.data = rf.persister.ReadSnapshot()
+	rf.lastApplied = rf.lastIncludedIndex
+	rf.commitIndex = rf.lastIncludedIndex
 }
 
 // RequestVote RPC arguments structure.
@@ -294,22 +301,6 @@ func (rf *Raft) getElectionTimeout() time.Duration {
 // GetSize read RaftStateSize
 func (rf *Raft) GetSize() int {
 	return rf.persister.RaftStateSize()
-}
-
-// SnapshotAndPersist snapshot and persist the state
-func (rf *Raft) SnapshotAndPersist(snapshot []byte) {
-	rf.mu.Lock()
-	defer func() {
-		rf.mu.Unlock()
-	}()
-	defer rf.persister.Save(rf.persister.ReadRaftState(), snapshot)
-	// truncate the log
-	lastIncludedIndex := rf.commitIndex
-	lastIncludedTerm := rf.getLogTerm(lastIncludedIndex)
-	rf.logs = rf.getLogEntriesFromStart(lastIncludedIndex)
-
-	rf.lastIncludedIndex = lastIncludedIndex
-	rf.lastIncludedTerm = lastIncludedTerm
 }
 
 // send value to an un-buffered channel without blocking
@@ -942,6 +933,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
+// need to be called with lock held
+func (rf *Raft) LogExists(index int) bool {
+	if rf.lastIncludedIndex != 0 {
+		return index >= rf.lastIncludedIndex
+	}
+	return index >= 1 && index < len(rf.logs)-1
+}
+
 // index accessors
 // need to be called with lock held
 func (rf *Raft) getLogEntry(index int) LogEntry {
@@ -1032,6 +1031,7 @@ func (rf *Raft) getLogTerm(index int) int {
 func (rf *Raft) Snapshot(index int, i []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if index < rf.commitIndex {
 		return
 	}
@@ -1040,12 +1040,10 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 	DPrintf("server %v received index: %d cutoffIndex: %d", rf.me, index, cutoffIndex)
 	DPrintf("server %v before after snapshot with index %d and cutoff %d", rf.me, index, cutoffIndex)
 	rf.data = i
-	rf.printLog()
 	rf.lastIncludedTerm = rf.getLogTerm(index)
 	rf.lastIncludedIndex = index
 	rf.logs = rf.getLogEntriesUntilEnd(cutoffIndex + 1)
 	DPrintf("server %v logs after snapshot with index %d and cutoff %d", rf.me, index, cutoffIndex)
-	rf.printLog()
 }
 
 func (rf *Raft) printLog() {
