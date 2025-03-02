@@ -190,7 +190,6 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.lastIncludedTerm = raftState.LastIncludedTerm
 	rf.data = rf.persister.ReadSnapshot()
 	rf.lastApplied = rf.lastIncludedIndex
-	rf.commitIndex = rf.lastIncludedIndex
 }
 
 // RequestVote RPC arguments structure.
@@ -1032,18 +1031,16 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
-	if index < rf.commitIndex {
+	DPrintf("Server %d received snapshot with index %d", rf.me, index)
+	if index <= rf.commitIndex {
 		return
 	}
 	cutoffIndex := index - rf.lastIncludedIndex
-	DPrintf("server %v byte snapshot %v", rf.me, i)
 	DPrintf("server %v received index: %d cutoffIndex: %d", rf.me, index, cutoffIndex)
-	DPrintf("server %v before after snapshot with index %d and cutoff %d", rf.me, index, cutoffIndex)
 	rf.data = i
 	rf.lastIncludedTerm = rf.getLogTerm(index)
 	rf.lastIncludedIndex = index
 	rf.logs = rf.getLogEntriesUntilEnd(cutoffIndex + 1)
-	DPrintf("server %v logs after snapshot with index %d and cutoff %d", rf.me, index, cutoffIndex)
 }
 
 func (rf *Raft) printLog() {

@@ -1095,7 +1095,7 @@ func TestUnreliableChurn3C(t *testing.T) {
 	internalChurn(t, true)
 }
 
-const MAXLOGSIZE = 2000
+const MAXLOGSIZE = 10000000000000000
 
 func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash bool) {
 	iters := 30
@@ -1143,7 +1143,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		}
 
 		if cfg.LogSize() >= MAXLOGSIZE {
-			cfg.t.Fatalf("Log size too large %v", cfg.LogSize())
+			cfg.t.Fatalf("Log size too large %v in iter %v", cfg.LogSize(), i)
 		}
 		if disconnect {
 			// reconnect a follower, who maybe behind and

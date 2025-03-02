@@ -646,11 +646,14 @@ func (cfg *config) end() {
 // Maximum log size across all servers
 func (cfg *config) LogSize() int {
 	logsize := 0
+	maxlogsize := 0
 	for i := 0; i < cfg.n; i++ {
 		n := cfg.saved[i].RaftStateSize()
 		if n > logsize {
 			logsize = n
+			maxlogsize = i
 		}
 	}
+	DPrintf("server %d with max log size %v", maxlogsize, logsize)
 	return logsize
 }
