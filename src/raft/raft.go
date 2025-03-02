@@ -988,6 +988,24 @@ func (rf *Raft) getLogEntriesFromStart(start int) []LogEntry {
 	return rf.logs[start-rf.lastIncludedIndex-1:]
 }
 
+func (rf *Raft) getLogsEntriesFromStart(start int) []LogEntry {
+	defer func() {
+		if r := recover(); r != nil {
+			DPrintf("server %v panic in getLogEntriesFromStart with start %d", rf.me, start)
+			rf.printLog()
+			panic(r)
+		}
+	}()
+	DPrintf("server %v getLogEntriesFromStart start %d len %d last included index %d",
+		rf.me, start, len(rf.logs), rf.lastIncludedIndex)
+	if rf.lastIncludedIndex == 0 {
+		return rf.logs[start+1:]
+	} else if start <= rf.lastIncludedIndex {
+		return []LogEntry{}
+	}
+	return rf.logs[start-rf.lastIncludedIndex:]
+}
+
 func (rf *Raft) getLogEntriesUntilEnd(end int) []LogEntry {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1031,16 +1049,18 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
-	DPrintf("Server %d received snapshot with index %d", rf.me, index)
-	if index <= rf.commitIndex {
-		return
+	if index > rf.commitIndex {
+		DPrintf("server %v snapshot index %d greater than commit index %d", rf.me, index, rf.commitIndex)
+		panic("snapshot index greater than commit index")
 	}
-	cutoffIndex := index - rf.lastIncludedIndex
-	DPrintf("server %v received index: %d cutoffIndex: %d", rf.me, index, cutoffIndex)
+	DPrintf("server %v received snapshot index: %d, current last included index %d, commit index %d", rf.me, index, rf.lastIncludedIndex, rf.commitIndex)
+	rf.printLog()
 	rf.data = i
 	rf.lastIncludedTerm = rf.getLogTerm(index)
+	rf.logs = rf.getLogsEntriesFromStart(index)
+	DPrintf("server %v logs after snapshot", rf.me)
 	rf.lastIncludedIndex = index
-	rf.logs = rf.getLogEntriesUntilEnd(cutoffIndex + 1)
+	rf.printLog()
 }
 
 func (rf *Raft) printLog() {
