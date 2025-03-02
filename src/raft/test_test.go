@@ -1095,7 +1095,7 @@ func TestUnreliableChurn3C(t *testing.T) {
 	internalChurn(t, true)
 }
 
-const MAXLOGSIZE = 10000000000000000
+const MAXLOGSIZE = 2000
 
 func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash bool) {
 	iters := 30
