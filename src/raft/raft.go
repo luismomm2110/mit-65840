@@ -189,6 +189,7 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.lastIncludedIndex = raftState.LastIncludedIndex
 	rf.lastIncludedTerm = raftState.LastIncludedTerm
 	rf.data = rf.persister.ReadSnapshot()
+	rf.commitIndex = rf.lastIncludedIndex
 	rf.lastApplied = rf.lastIncludedIndex
 }
 
@@ -476,6 +477,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	defer func() {
 		rf.mu.Unlock()
 	}()
+	defer rf.persist()
 
 	if args.Term < rf.currentTerm {
 		DPrintf("server %v received install snapshot with term %d less than current term %d", rf.me, args.Term, rf.currentTerm)
@@ -494,8 +496,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	//If existing log entry has same index and term as snapshot’s last included entry, retain log entries following it and reply
 	if rf.getLogLength() >= args.LastIncludedIndex && rf.getLogTerm(args.LastIncludedIndex) == args.LastIncludedTerm {
-		DPrintf("server %v logs after install snapshot %v retaining logs", rf.me, rf.logs)
 		rf.logs = rf.getLogEntriesFromStart(args.LastIncludedIndex + 1)
+		DPrintf("server %v logs after install snapshot %v retaining logs", rf.me, rf.logs)
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
 		if rf.commitIndex < args.LastIncludedIndex {
@@ -503,6 +505,15 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		}
 		if rf.lastApplied < args.LastIncludedIndex {
 			rf.lastApplied = args.LastIncludedIndex
+		}
+		rf.applyCh <- ApplyMsg{
+			CommandIndex:  -1,
+			CommandValid:  false,
+			Command:       nil,
+			SnapshotValid: true,
+			SnapshotIndex: args.LastIncludedIndex,
+			SnapshotTerm:  args.LastIncludedTerm,
+			Snapshot:      args.Data,
 		}
 		return
 	}
