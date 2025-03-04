@@ -4,9 +4,12 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
+	"bytes"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const Debug = false
@@ -18,10 +21,58 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+// enum for operation type
+type OperationType int
+
+const (
+	PutOp    OperationType = 1
+	AppendOp OperationType = 2
+	GetOp    OperationType = 3
+)
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+
+	// should enter an 0p in Raft Log using start and describes a Put/Append/Get operation
+
+	Type      OperationType // operation type
+	Key       string        // key
+	Value     string        //key
+	ClientId  int
+	RequestId int64
+}
+
+func (op Op) String() string {
+	return fmt.Sprintf(
+		"Op{Type: %s, Key: %q, Value: %q, ClientId: %d, RequestId: %d}",
+		translateOperationType(op.Type), op.Key, op.Value, op.ClientId, op.RequestId,
+	)
+}
+
+// Helper function to translate OperationType to string
+func translateOperationType(opType OperationType) string {
+	switch opType {
+	case PutOp:
+		return "PutOp"
+	case AppendOp:
+		return "AppendOp"
+	case GetOp:
+		return "GetOp"
+	default:
+		return "UnknownOp"
+	}
+}
+
+type Snapshot struct {
+	Values                map[string]string
+	CompletedRequestsById map[int]RequestInfo
+}
+
+type RequestInfo struct {
+	RequestId     int64
+	CommitedIndex int
 }
 
 type KVServer struct {
@@ -34,18 +85,103 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	values                map[string]string
+	operations            map[int]Op
+	channels              map[int]chan Op
+	completedRequestsById map[int]RequestInfo
+	cond                  *sync.Cond
+	stopCh                chan struct{}
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := Op{
+		Type:      GetOp,
+		Key:       args.Key,
+		ClientId:  args.ClientId,
+		RequestId: args.RequestId,
+	}
+	// index, term, isLeader
+	kv.mu.Lock()
+	DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
+	if requestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
+		if args.RequestId <= requestInfo.RequestId {
+			DPrintf("Server %d client %d requestId %d already completed key %v",
+				kv.me, args.ClientId, args.RequestId, args.Key)
+			reply.Err = OK
+			reply.Value = kv.values[args.Key]
+			kv.mu.Unlock()
+			return
+		}
+	}
+	kv.mu.Unlock()
+	receivedIndex, _, leader := kv.rf.Start(op)
+	if !leader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	for {
+		if lastRequestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
+			if lastRequestInfo.CommitedIndex != receivedIndex {
+				reply.Err = ErrWrongLeader
+				return
+			}
+			reply.Value = kv.values[args.Key]
+			DPrintf("SERVER %d GET client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, reply.Value)
+			reply.Err = OK
+			return
+		}
+		kv.cond.Wait()
+	}
 }
 
-func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-}
+	op := Op{
+		Type:      args.OperationType,
+		Key:       args.Key,
+		Value:     args.Value,
+		ClientId:  args.ClientId,
+		RequestId: args.RequestId,
+	}
+	kv.mu.Lock()
 
-func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	if lastRequestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
+		if args.RequestId <= lastRequestInfo.RequestId {
+			DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
+				kv.me, args.ClientId, args.RequestId, args.Key)
+			reply.Err = OK
+			kv.mu.Unlock()
+			return
+		}
+	}
+	kv.mu.Unlock()
+	receivedIndex, _, leader := kv.rf.Start(op)
+	if !leader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	for {
+		if requestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
+			commitedIndex := requestInfo.CommitedIndex
+			if commitedIndex != receivedIndex {
+				reply.Err = ErrWrongLeader
+				return
+			}
+			DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+			reply.Err = OK
+			return
+		}
+		kv.cond.Wait()
+	}
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -60,6 +196,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
+	kv.dead = 1
 }
 
 func (kv *KVServer) killed() bool {
@@ -82,18 +219,134 @@ func (kv *KVServer) killed() bool {
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
+	labgob.Register(RequestInfo{})
 	labgob.Register(Op{})
 
 	kv := new(KVServer)
 	kv.me = me
+	kv.mu = sync.Mutex{}
 	kv.maxraftstate = maxraftstate
-
-	// You may need initialization code here.
+	kv.dead = 0
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	// You may need initialization code here.
+	kv.values = make(map[string]string)
+	kv.operations = make(map[int]Op)
+	kv.completedRequestsById = make(map[int]RequestInfo)
+	kv.cond = sync.NewCond(&kv.mu)
+	state := kv.rf.ReadSnapshot()
+	if len(state) > 0 {
+		DPrintf("Server %d restarting from snapshot", kv.me)
+		DPrintf("\n\n\n\n\n\n\n\n\n\n\\n\n\n\n\n")
+		DPrintf("\n\n\n\n\n\n\n\n\n\n\\n\n\n\n\n")
+		var snapshot Snapshot
+		buffer := bytes.NewBuffer(state)
+		decoder := labgob.NewDecoder(buffer)
+		err := decoder.Decode(&snapshot)
+		if err != nil {
+			log.Fatalf("Server %d failed to decode snapshot", kv.me)
+		}
+		kv.PrintSnapshot(snapshot)
+		kv.values = snapshot.Values
+		kv.completedRequestsById = snapshot.CompletedRequestsById
+		DPrintf("\n\n\n\n\n\n\n\n\n\n\\n\n\n\n\n")
+		DPrintf("\n\n\n\n\n\n\n\n\n\n\\n\n\n\n\n")
+	}
+
+	// go routine to apply operations from Raft log to KV store
+	go kv.applyOp()
+
+	// go routine to snapshot Raft state
+	kv.StartSnapshotRoutine() // Start the snapshot routine
 
 	return kv
+}
+
+func (kv *KVServer) PrintSnapshot(snapshot Snapshot) {
+	// Format Values with a break line for each key-value pair
+	var formattedValues string
+	for key, value := range snapshot.Values {
+		formattedValues += fmt.Sprintf("\n\tKey: %q, Value: %q", key, value)
+	}
+
+	// Print the formatted snapshot
+	DPrintf("Server %d snapshot %s", kv.me, formattedValues)
+}
+
+func (kv *KVServer) applyOp() {
+	for {
+		msg := <-kv.applyCh
+		kv.mu.Lock()
+		op := msg.Command.(Op)
+		DPrintf("Server %d applyOp msg %v", kv.me, op)
+		if _, ok := kv.completedRequestsById[op.ClientId]; ok {
+			// já completou a operação
+			if op.RequestId <= kv.completedRequestsById[op.ClientId].RequestId {
+				kv.mu.Unlock()
+				kv.cond.Broadcast()
+				continue
+			}
+		}
+		switch op.Type {
+		case PutOp:
+			kv.values[op.Key] = op.Value
+		case AppendOp:
+			kv.values[op.Key] += op.Value
+		}
+
+		lastRequestId := kv.completedRequestsById[op.ClientId].RequestId
+		if op.RequestId > lastRequestId {
+			kv.completedRequestsById[op.ClientId] = RequestInfo{
+				RequestId:     op.RequestId,
+				CommitedIndex: msg.CommandIndex,
+			}
+		}
+		kv.cond.Broadcast()
+		kv.mu.Unlock()
+		DPrintf("Server %d applyOp msg %v", kv.me, op)
+		kv.snapshotRaftState()
+	}
+}
+
+func (kv *KVServer) StartSnapshotRoutine() {
+	ticker := time.NewTicker(100 * time.Millisecond) // Create a ticker that ticks every 100ms
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				kv.snapshotRaftState() // Call the function periodically
+			case <-kv.stopCh:
+				ticker.Stop() // Stop the ticker when the server is shutting down
+				return
+			}
+		}
+	}()
+}
+
+func (kv *KVServer) snapshotRaftState() {
+	if kv.maxraftstate == -1 {
+		return
+	}
+	snapshotSize := kv.rf.GetSize()
+	// compare with maxraftstate
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if snapshotSize > kv.maxraftstate {
+		// sent a snapshot to raft unit
+		DPrintf("Server %d making snapshot", kv.me)
+		snapshot := Snapshot{
+			Values:                kv.values,
+			CompletedRequestsById: kv.completedRequestsById,
+		}
+		kv.PrintSnapshot(snapshot)
+		var buffer bytes.Buffer
+		encoder := labgob.NewEncoder(&buffer)
+		err := encoder.Encode(snapshot)
+		if err != nil {
+			log.Fatalf("Server %d failed to encode snapshot", kv.me)
+		}
+		//kv.rf.SnapshotAndPersist(buffer.Bytes())
+		DPrintf("Server %d snapshotRaftState snapshotSize %d", kv.me, snapshotSize)
+	}
 }
