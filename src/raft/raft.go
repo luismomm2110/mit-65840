@@ -881,7 +881,7 @@ func (rf *Raft) runServer() {
 			select {
 			case <-rf.stepDownCh:
 				// state should already be follower
-			case <-time.After(120 * time.Millisecond):
+			case <-time.After(30 * time.Millisecond):
 				rf.mu.Lock()
 				rf.broadcastAppendEntries()
 				rf.mu.Unlock()

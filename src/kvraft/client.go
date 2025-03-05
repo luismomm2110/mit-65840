@@ -58,6 +58,7 @@ func (ck *Clerk) Get(key string) string {
 			serverIndex := (start + offset) % numServers
 			reply := GetReply{}
 			ok := make(chan bool)
+			DPrintf("Client %d SENDING GET %v key %v to server %d", ck.me, args, key, serverIndex)
 			go func() {
 				ok <- ck.servers[serverIndex].Call("KVServer.Get", &args, &reply)
 			}()
@@ -69,7 +70,7 @@ func (ck *Clerk) Get(key string) string {
 						return reply.Value
 					}
 				}
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(20 * time.Millisecond):
 				{
 					DPrintf("Client %d Get key %v value from server %d timeout", ck.me, key, serverIndex)
 					continue
@@ -106,8 +107,8 @@ func (ck *Clerk) PutAppend(key string, value string, op OperationType) {
 			serverIndex := (start + offset) % numServers
 			reply := PutAppendReply{}
 			ok := make(chan bool)
+			DPrintf("Client %d SENDING PUT %v key %v to server %d", ck.me, args, key, serverIndex)
 			go func() {
-				//DPrintf("Client %d SENDING PUTAPPEND REQUESTID %d key %v value %v to server %d", ck.me, args.RequestId, key, value, serverIndex)
 				ok <- ck.servers[serverIndex].Call("KVServer.PutAppend", &args, &reply)
 			}()
 			select {
@@ -119,7 +120,7 @@ func (ck *Clerk) PutAppend(key string, value string, op OperationType) {
 						return
 					}
 				}
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(20 * time.Millisecond):
 				{
 					DPrintf("Client %d PutAppend key %v value %v to server %d timeout", ck.me, key, value, serverIndex)
 					continue

@@ -1,5 +1,7 @@
 package kvraft
 
+import "strconv"
+
 const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
@@ -20,8 +22,18 @@ type PutAppendArgs struct {
 	ClientId int
 }
 
+// generate to string for PutAppendArgs
+func (args PutAppendArgs) String() string {
+	return "PutAppendArgs{" + args.Key + ", " + args.Value + ", " + strconv.Itoa(int(args.OperationType)) + ", " + strconv.FormatInt(args.RequestId, 10) + ", " + strconv.Itoa(args.ClientId) + "}"
+}
+
 type PutAppendReply struct {
 	Err Err
+}
+
+// generate to string for PutAppendReply
+func (reply PutAppendReply) String() string {
+	return "PutAppendReply{" + string(reply.Err) + "}"
 }
 
 type GetArgs struct {
@@ -32,7 +44,17 @@ type GetArgs struct {
 	ClientId int
 }
 
+// generate to string for GetArgs
+func (args GetArgs) String() string {
+	return "GetArgs{" + args.Key + ", " + strconv.FormatInt(args.RequestId, 10) + ", " + strconv.Itoa(args.ClientId) + "}"
+}
+
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+// generate to string for GetReply
+func (reply GetReply) String() string {
+	return "GetReply{" + string(reply.Err) + ", " + reply.Value + "}"
 }
