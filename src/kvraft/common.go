@@ -24,7 +24,7 @@ type PutAppendArgs struct {
 
 // generate to string for PutAppendArgs
 func (args PutAppendArgs) String() string {
-	return "PutAppendArgs{" + args.Key + ", " + args.Value + ", " + strconv.Itoa(int(args.OperationType)) + ", " + strconv.FormatInt(args.RequestId, 10) + ", " + strconv.Itoa(args.ClientId) + "}"
+	return "PutAppendArgs{key " + args.Key + " value, " + args.Value + "op, " + strconv.Itoa(int(args.OperationType)) + " RequestId, " + strconv.FormatInt(args.RequestId, 10) + " ClientId, " + strconv.Itoa(args.ClientId) + "}"
 }
 
 type PutAppendReply struct {
@@ -46,7 +46,7 @@ type GetArgs struct {
 
 // generate to string for GetArgs
 func (args GetArgs) String() string {
-	return "GetArgs{" + args.Key + ", " + strconv.FormatInt(args.RequestId, 10) + ", " + strconv.Itoa(args.ClientId) + "}"
+	return "GetArgs{key " + args.Key + "RequestId, " + strconv.FormatInt(args.RequestId, 10) + "ClientId, " + strconv.Itoa(args.ClientId) + " }"
 }
 
 type GetReply struct {

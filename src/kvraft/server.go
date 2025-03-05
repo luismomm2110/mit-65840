@@ -304,7 +304,6 @@ func (kv *KVServer) applyOp() {
 		}
 		kv.cond.Broadcast()
 		kv.mu.Unlock()
-		DPrintf("Server %d applyOp msg %v", kv.me, op)
 		kv.snapshotRaftState()
 	}
 }
