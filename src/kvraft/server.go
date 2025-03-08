@@ -9,7 +9,6 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 const Debug = false
@@ -68,6 +67,7 @@ func translateOperationType(opType OperationType) string {
 type Snapshot struct {
 	Values                map[string]string
 	CompletedRequestsById map[int]RequestInfo
+	LastSeenIndex         int
 }
 
 type RequestInfo struct {
@@ -91,6 +91,7 @@ type KVServer struct {
 	completedRequestsById map[int]RequestInfo
 	cond                  *sync.Cond
 	stopCh                chan struct{}
+	LastSeenIndex         int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -103,11 +104,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	// index, term, isLeader
 	kv.mu.Lock()
-	DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
+	//DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
 	if requestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 		if args.RequestId <= requestInfo.RequestId {
-			DPrintf("Server %d client %d requestId %d already completed key %v",
-				kv.me, args.ClientId, args.RequestId, args.Key)
+			//DPrintf("Server %d client %d requestId %d already completed key %v",
+			//	kv.me, args.ClientId, args.RequestId, args.Key)
 			reply.Err = OK
 			reply.Value = kv.values[args.Key]
 			kv.mu.Unlock()
@@ -121,7 +122,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
+	//DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for {
@@ -131,7 +132,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				return
 			}
 			reply.Value = kv.values[args.Key]
-			DPrintf("SERVER %d GET client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, reply.Value)
+			//DPrintf("SERVER %d GET client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, reply.Value)
 			reply.Err = OK
 			return
 		}
@@ -152,8 +153,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if lastRequestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 		if args.RequestId <= lastRequestInfo.RequestId {
-			DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
-				kv.me, args.ClientId, args.RequestId, args.Key)
+			//DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
+			//	kv.me, args.ClientId, args.RequestId, args.Key)
 			reply.Err = OK
 			kv.mu.Unlock()
 			return
@@ -166,7 +167,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+	//DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for {
@@ -176,7 +177,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.Err = ErrWrongLeader
 				return
 			}
-			DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+			//DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 			reply.Err = OK
 			return
 		}
@@ -238,29 +239,30 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	state := kv.rf.ReadSnapshot()
 	if len(state) > 0 {
 		DPrintf("Server %d restarting from snapshot", kv.me)
-		DPrintf("\n\n\n\n\n\n\n\n\n\n\\n\n\n\n\n")
-		DPrintf("\n\n\n\n\n\n\n\n\n\n\\n\n\n\n\n")
-		var snapshot Snapshot
-		buffer := bytes.NewBuffer(state)
-		decoder := labgob.NewDecoder(buffer)
-		err := decoder.Decode(&snapshot)
-		if err != nil {
-			log.Fatalf("Server %d failed to decode snapshot", kv.me)
-		}
-		kv.PrintSnapshot(snapshot)
-		kv.values = snapshot.Values
-		kv.completedRequestsById = snapshot.CompletedRequestsById
-		DPrintf("\n\n\n\n\n\n\n\n\n\n\\n\n\n\n\n")
-		DPrintf("\n\n\n\n\n\n\n\n\n\n\\n\n\n\n\n")
+		kv.syncWithSnapshot(state)
 	}
 
 	// go routine to apply operations from Raft log to KV store
 	go kv.applyOp()
 
 	// go routine to snapshot Raft state
-	kv.StartSnapshotRoutine() // Start the snapshot routine
+	//kv.StartSnapshotRoutine() // Start the snapshot routine
 
 	return kv
+}
+
+// lock must be held
+func (kv *KVServer) syncWithSnapshot(state []byte) {
+	var snapshot Snapshot
+	buffer := bytes.NewBuffer(state)
+	decoder := labgob.NewDecoder(buffer)
+	err := decoder.Decode(&snapshot)
+	if err != nil {
+		log.Fatalf("Server %d failed to decode snapshot", kv.me)
+	}
+	kv.values = snapshot.Values
+	kv.completedRequestsById = snapshot.CompletedRequestsById
+	kv.LastSeenIndex = snapshot.LastSeenIndex
 }
 
 func (kv *KVServer) PrintSnapshot(snapshot Snapshot) {
@@ -278,8 +280,14 @@ func (kv *KVServer) applyOp() {
 	for {
 		msg := <-kv.applyCh
 		kv.mu.Lock()
+		if msg.SnapshotValid {
+			DPrintf("Server %d applyOp snapshot", kv.me)
+			kv.syncWithSnapshot(msg.Snapshot)
+			kv.mu.Unlock()
+			continue
+		}
+		index := msg.CommandIndex
 		op := msg.Command.(Op)
-		DPrintf("Server %d applyOp msg %v", kv.me, op)
 		if _, ok := kv.completedRequestsById[op.ClientId]; ok {
 			// já completou a operação
 			if op.RequestId <= kv.completedRequestsById[op.ClientId].RequestId {
@@ -302,26 +310,27 @@ func (kv *KVServer) applyOp() {
 				CommitedIndex: msg.CommandIndex,
 			}
 		}
+		kv.LastSeenIndex = index
 		kv.cond.Broadcast()
 		kv.mu.Unlock()
 		kv.snapshotRaftState()
 	}
 }
 
-func (kv *KVServer) StartSnapshotRoutine() {
-	ticker := time.NewTicker(100 * time.Millisecond) // Create a ticker that ticks every 100ms
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				kv.snapshotRaftState() // Call the function periodically
-			case <-kv.stopCh:
-				ticker.Stop() // Stop the ticker when the server is shutting down
-				return
-			}
-		}
-	}()
-}
+//func (kv *KVServer) StartSnapshotRoutine() {
+//	ticker := time.NewTicker(100 * time.Millisecond) // Create a ticker that ticks every 100ms
+//	go func() {
+//		for {
+//			select {
+//			case <-ticker.C:
+//				kv.snapshotRaftState() // Call the function periodically
+//			case <-kv.stopCh:
+//				ticker.Stop() // Stop the ticker when the server is shutting down
+//				return
+//			}
+//		}
+//	}()
+//}
 
 func (kv *KVServer) snapshotRaftState() {
 	if kv.maxraftstate == -1 {
@@ -331,21 +340,22 @@ func (kv *KVServer) snapshotRaftState() {
 	// compare with maxraftstate
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	if snapshotSize > kv.maxraftstate {
+	//DPrintf("Server %d snapshotRaftState snapshotSize %d max size %d", kv.me, snapshotSize, kv.maxraftstate)
+	if snapshotSize >= kv.maxraftstate {
 		// sent a snapshot to raft unit
-		DPrintf("Server %d making snapshot", kv.me)
+		//DPrintf("Server %d making snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
 		snapshot := Snapshot{
 			Values:                kv.values,
 			CompletedRequestsById: kv.completedRequestsById,
+			LastSeenIndex:         kv.LastSeenIndex,
 		}
-		kv.PrintSnapshot(snapshot)
 		var buffer bytes.Buffer
 		encoder := labgob.NewEncoder(&buffer)
 		err := encoder.Encode(snapshot)
 		if err != nil {
 			log.Fatalf("Server %d failed to encode snapshot", kv.me)
 		}
-		//kv.rf.SnapshotAndPersist(buffer.Bytes())
+		kv.rf.Snapshot(kv.LastSeenIndex, buffer.Bytes())
 		DPrintf("Server %d snapshotRaftState snapshotSize %d", kv.me, snapshotSize)
 	}
 }

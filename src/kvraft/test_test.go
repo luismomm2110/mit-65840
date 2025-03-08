@@ -670,8 +670,9 @@ func TestSnapshotSize4B(t *testing.T) {
 		check(cfg, t, ck, "x", "1")
 	}
 
-	// check that servers have thrown away most of their log entries
+	//check that servers have thrown away most of their log entries
 	sz := cfg.LogSize()
+	DPrintf("Log size: %v\n", sz)
 	if sz > 8*maxraftstate {
 		t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
 	}

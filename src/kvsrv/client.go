@@ -41,7 +41,7 @@ func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
 	ck.requestId += 1
-	DPrintf("get key: %v, reequestId: %v, clientID %v", key, ck.requestId, ck.clientId)
+	//DPrintf("get key: %v, reequestId: %v, clientID %v", key, ck.requestId, ck.clientId)
 	ok := false
 	reply := GetReply{}
 	for !ok {
@@ -71,7 +71,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) string {
 
 func (ck *Clerk) Put(key string, value string) {
 	ck.requestId += 1
-	DPrintf("put key: %v, value: %v , reequestId: %v, clientID %v", key, value, ck.requestId, ck.clientId)
+	//DPrintf("put key: %v, value: %v , reequestId: %v, clientID %v", key, value, ck.requestId, ck.clientId)
 	reply := PutAppendReply{}
 	ok := false
 	for !ok {
@@ -87,9 +87,9 @@ func (ck *Clerk) Append(key string, value string) string {
 	ok := false
 	for !ok {
 		args := PutAppendArgs{Key: key, Value: value, ClientId: ck.clientId, RequestId: ck.requestId}
-		DPrintf("append key: %v, value: %v , reequestId: %v, clientID %v", key, value, ck.requestId, ck.clientId)
+		//DPrintf("append key: %v, value: %v , reequestId: %v, clientID %v", key, value, ck.requestId, ck.clientId)
 		ok = ck.server.Call("KVServer."+"Append", &args, &reply)
 	}
-	DPrintf("append reply: %v, clientID %v, requestId %v", reply.Value, ck.clientId, ck.requestId)
+	//DPrintf("append reply: %v, clientID %v, requestId %v", reply.Value, ck.clientId, ck.requestId)
 	return reply.Value
 }
