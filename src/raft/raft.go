@@ -1064,9 +1064,9 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 		DPrintf("server %v snapshot index %d greater than commit index %d", rf.me, index, rf.commitIndex)
 		panic("snapshot index greater than commit index")
 	}
-	if index == rf.lastIncludedIndex {
+	if index <= rf.lastIncludedIndex {
 		DPrintf("server %v snapshot index %d equal to last included index %d", rf.me, index, rf.lastIncludedIndex)
-		return
+		panic("snapshot index equal to last included index")
 	}
 	DPrintf("server %v received snapshot index: %d, current last included index %d, commit index %d", rf.me, index, rf.lastIncludedIndex, rf.commitIndex)
 	rf.printLog()

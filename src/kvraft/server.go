@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -239,7 +239,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	state := kv.rf.ReadSnapshot()
 	if len(state) > 0 {
 		DPrintf("Server %d restarting from snapshot", kv.me)
+		kv.mu.Lock()
 		kv.syncWithSnapshot(state)
+		kv.mu.Unlock()
 	}
 
 	// go routine to apply operations from Raft log to KV store
@@ -310,40 +312,26 @@ func (kv *KVServer) applyOp() {
 				CommitedIndex: msg.CommandIndex,
 			}
 		}
-		kv.LastSeenIndex = index
+		kv.snapshotRaftState(index)
 		kv.cond.Broadcast()
 		kv.mu.Unlock()
-		kv.snapshotRaftState()
 	}
 }
 
-//func (kv *KVServer) StartSnapshotRoutine() {
-//	ticker := time.NewTicker(100 * time.Millisecond) // Create a ticker that ticks every 100ms
-//	go func() {
-//		for {
-//			select {
-//			case <-ticker.C:
-//				kv.snapshotRaftState() // Call the function periodically
-//			case <-kv.stopCh:
-//				ticker.Stop() // Stop the ticker when the server is shutting down
-//				return
-//			}
-//		}
-//	}()
-//}
-
-func (kv *KVServer) snapshotRaftState() {
+func (kv *KVServer) snapshotRaftState(lastSeenIndex int) {
 	if kv.maxraftstate == -1 {
 		return
 	}
 	snapshotSize := kv.rf.GetSize()
 	// compare with maxraftstate
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	//DPrintf("Server %d snapshotRaftState snapshotSize %d max size %d", kv.me, snapshotSize, kv.maxraftstate)
+	if lastSeenIndex <= kv.LastSeenIndex {
+		return
+	}
+	kv.LastSeenIndex = lastSeenIndex
+	DPrintf("Server %d snapshotRaftState snapshotSize %d max size %d", kv.me, snapshotSize, kv.maxraftstate)
 	if snapshotSize >= kv.maxraftstate {
 		// sent a snapshot to raft unit
-		//DPrintf("Server %d making snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
+		DPrintf("Server %d making snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
 		snapshot := Snapshot{
 			Values:                kv.values,
 			CompletedRequestsById: kv.completedRequestsById,
