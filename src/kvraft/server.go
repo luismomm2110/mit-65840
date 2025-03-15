@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -279,25 +279,26 @@ func (kv *KVServer) PrintSnapshot(snapshot Snapshot) {
 }
 
 func (kv *KVServer) applyOp() {
-	for {
-		msg := <-kv.applyCh
+	for msg := range kv.applyCh {
 		kv.mu.Lock()
 		if msg.SnapshotValid {
-			DPrintf("Server %d applyOp snapshot", kv.me)
+			DPrintf("Server %d syncing snapshot", kv.me)
 			kv.syncWithSnapshot(msg.Snapshot)
 			kv.mu.Unlock()
 			continue
 		}
+
 		index := msg.CommandIndex
 		op := msg.Command.(Op)
+
 		if _, ok := kv.completedRequestsById[op.ClientId]; ok {
-			// já completou a operação
 			if op.RequestId <= kv.completedRequestsById[op.ClientId].RequestId {
 				kv.mu.Unlock()
 				kv.cond.Broadcast()
 				continue
 			}
 		}
+
 		switch op.Type {
 		case PutOp:
 			kv.values[op.Key] = op.Value
@@ -312,9 +313,10 @@ func (kv *KVServer) applyOp() {
 				CommitedIndex: msg.CommandIndex,
 			}
 		}
-		kv.snapshotRaftState(index)
-		kv.cond.Broadcast()
+
 		kv.mu.Unlock()
+		kv.cond.Broadcast()
+		kv.snapshotRaftState(index)
 	}
 }
 
@@ -322,11 +324,10 @@ func (kv *KVServer) snapshotRaftState(lastSeenIndex int) {
 	if kv.maxraftstate == -1 {
 		return
 	}
-	snapshotSize := kv.rf.GetSize()
 	// compare with maxraftstate
-	if lastSeenIndex <= kv.LastSeenIndex {
-		return
-	}
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	snapshotSize := kv.rf.GetSize()
 	kv.LastSeenIndex = lastSeenIndex
 	DPrintf("Server %d snapshotRaftState snapshotSize %d max size %d", kv.me, snapshotSize, kv.maxraftstate)
 	if snapshotSize >= kv.maxraftstate {

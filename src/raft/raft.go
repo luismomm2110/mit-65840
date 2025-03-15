@@ -1064,15 +1064,12 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 		DPrintf("server %v snapshot index %d greater than commit index %d", rf.me, index, rf.commitIndex)
 		panic("snapshot index greater than commit index")
 	}
-	if index <= rf.lastIncludedIndex {
-		DPrintf("server %v snapshot index %d equal to last included index %d", rf.me, index, rf.lastIncludedIndex)
-		panic("snapshot index equal to last included index")
-	}
 	DPrintf("server %v received snapshot index: %d, current last included index %d, commit index %d", rf.me, index, rf.lastIncludedIndex, rf.commitIndex)
 	rf.printLog()
 	rf.data = i
 	rf.lastIncludedTerm = rf.getLogTerm(index)
 	rf.logs = rf.getLogsEntriesFromStart(index)
+	DPrintf("server %v size %v", rf.me, len(rf.persister.ReadRaftState()))
 	DPrintf("server %v logs after snapshot", rf.me)
 	rf.lastIncludedIndex = index
 	rf.printLog()

@@ -42,7 +42,7 @@ func (ps *Persister) ReadRaftState() []byte {
 	return clone(ps.raftstate)
 }
 
-// maxraftstate indicates the maximum allowed size of your persistent Raft state in bytes (including the log, but not including snapshots).
+// RaftStateSize maxraftstate indicates the maximum allowed size of your persistent Raft state in bytes (including the log, but not including snapshots).
 func (ps *Persister) RaftStateSize() int {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
