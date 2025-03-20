@@ -107,8 +107,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	//DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
 	if requestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 		if args.RequestId <= requestInfo.RequestId {
-			//DPrintf("Server %d client %d requestId %d already completed key %v",
-			//	kv.me, args.ClientId, args.RequestId, args.Key)
+			DPrintf("Server %d client %d requestId %d already completed key %v",
+				kv.me, args.ClientId, args.RequestId, args.Key)
 			reply.Err = OK
 			reply.Value = kv.values[args.Key]
 			kv.mu.Unlock()
@@ -153,8 +153,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if lastRequestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 		if args.RequestId <= lastRequestInfo.RequestId {
-			//DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
-			//	kv.me, args.ClientId, args.RequestId, args.Key)
+			DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
+				kv.me, args.ClientId, args.RequestId, args.Key)
 			reply.Err = OK
 			kv.mu.Unlock()
 			return
@@ -167,7 +167,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	//DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+	DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for {
@@ -177,7 +177,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.Err = ErrWrongLeader
 				return
 			}
-			//DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+			DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 			reply.Err = OK
 			return
 		}
@@ -247,9 +247,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// go routine to apply operations from Raft log to KV store
 	go kv.applyOp()
 
-	// go routine to snapshot Raft state
-	//kv.StartSnapshotRoutine() // Start the snapshot routine
-
 	return kv
 }
 
@@ -265,10 +262,14 @@ func (kv *KVServer) syncWithSnapshot(state []byte) {
 	kv.values = snapshot.Values
 	kv.completedRequestsById = snapshot.CompletedRequestsById
 	kv.LastSeenIndex = snapshot.LastSeenIndex
+	kv.PrintSnapshot(snapshot)
+	DPrintf("server %d snapshot sync completed", kv.me)
+	kv.rf.PrintLog()
 }
 
 func (kv *KVServer) PrintSnapshot(snapshot Snapshot) {
 	// Format Values with a break line for each key-value pair
+	DPrintf("Server %d printing snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
 	var formattedValues string
 	for key, value := range snapshot.Values {
 		formattedValues += fmt.Sprintf("\n\tKey: %q, Value: %q", key, value)
@@ -282,17 +283,18 @@ func (kv *KVServer) applyOp() {
 	for msg := range kv.applyCh {
 		kv.mu.Lock()
 		if msg.SnapshotValid {
-			DPrintf("Server %d syncing snapshot", kv.me)
-			kv.syncWithSnapshot(msg.Snapshot)
+			DPrintf("Server %d received snapshot %d", kv.me, msg.SnapshotIndex)
 			kv.mu.Unlock()
 			continue
 		}
 
 		index := msg.CommandIndex
 		op := msg.Command.(Op)
+		DPrintf("Server %d applying op %v at index %d", kv.me, op, index)
 
 		if _, ok := kv.completedRequestsById[op.ClientId]; ok {
 			if op.RequestId <= kv.completedRequestsById[op.ClientId].RequestId {
+				DPrintf("Server %d client %d requestId %d already completed key %v", kv.me, op.ClientId, op.RequestId, op.Key)
 				kv.mu.Unlock()
 				kv.cond.Broadcast()
 				continue
@@ -305,7 +307,7 @@ func (kv *KVServer) applyOp() {
 		case AppendOp:
 			kv.values[op.Key] += op.Value
 		}
-
+		DPrintf("Server %d applied op %v at index %d with key %v", kv.me, op, index, kv.values[op.Key])
 		lastRequestId := kv.completedRequestsById[op.ClientId].RequestId
 		if op.RequestId > lastRequestId {
 			kv.completedRequestsById[op.ClientId] = RequestInfo{
@@ -313,10 +315,9 @@ func (kv *KVServer) applyOp() {
 				CommitedIndex: msg.CommandIndex,
 			}
 		}
-
+		kv.snapshotRaftState(index)
 		kv.mu.Unlock()
 		kv.cond.Broadcast()
-		kv.snapshotRaftState(index)
 	}
 }
 
@@ -325,11 +326,11 @@ func (kv *KVServer) snapshotRaftState(lastSeenIndex int) {
 		return
 	}
 	// compare with maxraftstate
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	snapshotSize := kv.rf.GetSize()
+	if lastSeenIndex <= kv.LastSeenIndex {
+		return
+	}
 	kv.LastSeenIndex = lastSeenIndex
-	DPrintf("Server %d snapshotRaftState snapshotSize %d max size %d", kv.me, snapshotSize, kv.maxraftstate)
 	if snapshotSize >= kv.maxraftstate {
 		// sent a snapshot to raft unit
 		DPrintf("Server %d making snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
@@ -345,6 +346,5 @@ func (kv *KVServer) snapshotRaftState(lastSeenIndex int) {
 			log.Fatalf("Server %d failed to encode snapshot", kv.me)
 		}
 		kv.rf.Snapshot(kv.LastSeenIndex, buffer.Bytes())
-		DPrintf("Server %d snapshotRaftState snapshotSize %d", kv.me, snapshotSize)
 	}
 }

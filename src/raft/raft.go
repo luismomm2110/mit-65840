@@ -598,7 +598,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	args.Entries = args.Entries[j:]
 	rf.logs = append(rf.logs, args.Entries...)
 	//DPrintf("server %v logs after append entries %v", rf.me, rf.logs)
-	rf.printLog()
+	rf.PrintLog()
 
 	reply.Success = true
 
@@ -957,7 +957,7 @@ func (rf *Raft) getLogEntry(index int) LogEntry {
 	defer func() {
 		if r := recover(); r != nil {
 			DPrintf("server %v panic in getLogEntry with index %d", rf.me, index)
-			rf.printLog()
+			rf.PrintLog()
 			panic(r)
 		}
 	}()
@@ -971,7 +971,7 @@ func (rf *Raft) getLogLength() int {
 	defer func() {
 		if r := recover(); r != nil {
 			DPrintf("server %v panic in getLogLength", rf.me)
-			rf.printLog()
+			rf.PrintLog()
 			panic(r)
 		}
 	}()
@@ -985,7 +985,7 @@ func (rf *Raft) getLogEntriesFromStart(start int) []LogEntry {
 	defer func() {
 		if r := recover(); r != nil {
 			DPrintf("server %v panic in getLogEntriesFromStart with start %d", rf.me, start)
-			rf.printLog()
+			rf.PrintLog()
 			panic(r)
 		}
 	}()
@@ -1003,7 +1003,7 @@ func (rf *Raft) getLogsEntriesFromStart(start int) []LogEntry {
 	defer func() {
 		if r := recover(); r != nil {
 			//DPrintf("server %v panic in getLogEntriesFromStart with start %d", rf.me, start)
-			//rf.printLog()
+			//rf.PrintLog()
 			panic(r)
 		}
 	}()
@@ -1021,7 +1021,7 @@ func (rf *Raft) getLogEntriesUntilEnd(end int) []LogEntry {
 	defer func() {
 		if r := recover(); r != nil {
 			DPrintf("server %v panic in getLogEntriesUntilEnd with end %d", rf.me, end)
-			//rf.printLog()
+			//rf.PrintLog()
 			panic(r)
 		}
 	}()
@@ -1043,7 +1043,7 @@ func (rf *Raft) getLogTerm(index int) int {
 	defer func() {
 		if r := recover(); r != nil {
 			DPrintf("server %v panic in getLogTerm with index %d", rf.me, index)
-			rf.printLog()
+			rf.PrintLog()
 			panic(r)
 		}
 	}()
@@ -1065,23 +1065,21 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 		panic("snapshot index greater than commit index")
 	}
 	DPrintf("server %v received snapshot index: %d, current last included index %d, commit index %d", rf.me, index, rf.lastIncludedIndex, rf.commitIndex)
-	rf.printLog()
 	rf.data = i
 	rf.lastIncludedTerm = rf.getLogTerm(index)
 	rf.logs = rf.getLogsEntriesFromStart(index)
 	DPrintf("server %v size %v", rf.me, len(rf.persister.ReadRaftState()))
 	DPrintf("server %v logs after snapshot", rf.me)
 	rf.lastIncludedIndex = index
-	rf.printLog()
 }
 
-func (rf *Raft) printLog() {
-	//DPrintf("server %v printing logs", rf.me)
-	//for i, entry := range rf.logs {
-	//	if rf.lastIncludedIndex != 0 {
-	//		i++
-	//	}
-	//	//DPrintf("server %v Index: %d, rf.me, Term: %d, Command: %v (printing log)", rf.me, i+rf.lastIncludedIndex, entry.Term, entry.Command)
-	//}
-	//DPrintf("server %v len of logs: %d", rf.me, len(rf.logs))
+func (rf *Raft) PrintLog() {
+	DPrintf("server %v printing logs", rf.me)
+	for i, entry := range rf.logs {
+		if rf.lastIncludedIndex != 0 {
+			i++
+		}
+		DPrintf("server %v Index: %d, rf.me, Term: %d, Command: %v (printing log)", rf.me, i+rf.lastIncludedIndex, entry.Term, entry.Command)
+	}
+	DPrintf("server %v len of logs: %d", rf.me, len(rf.logs))
 }
