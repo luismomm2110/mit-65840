@@ -342,9 +342,9 @@ func (rf *Raft) applyLogs() {
 	var msgs []ApplyMsg
 
 	rf.mu.Lock()
-	//DPrintf("server %v applying logs from %d to %d with len log %d and last included index %d", rf.me, rf.lastApplied+1, rf.commitIndex, len(rf.logs), rf.lastIncludedIndex)
+	DPrintf("server %v applying logs from %d to %d with len log %d and last included index %d", rf.me, rf.lastApplied+1, rf.commitIndex, len(rf.logs), rf.lastIncludedIndex)
 	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-		//DPrintf("server %v applying log %d", rf.me, rf.getLogEntry(i))
+		DPrintf("server %v applying log %d", rf.me, rf.getLogEntry(i))
 		msgs = append(msgs, ApplyMsg{
 			CommandValid: true,
 			Command:      rf.getLogEntry(i).Command,
@@ -352,7 +352,7 @@ func (rf *Raft) applyLogs() {
 		})
 		rf.lastApplied = i
 	}
-	//DPrintf("server %v sending apply msgs %v", rf.me, msgs)
+	DPrintf("server %v sending apply msgs %v", rf.me, msgs)
 	rf.mu.Unlock()
 
 	for _, msg := range msgs {
@@ -473,14 +473,14 @@ func (rf *Raft) broadcastRequestVote() {
 // deve mandar applych to the service in an ApplyMsg
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	//DPrintf("server %v received install snapshot with args %v term %v and current lastIncludedIndex %v", rf.me, args, rf.currentTerm, rf.lastIncludedIndex)
+	DPrintf("server %v received install snapshot with args %v term %v and current lastIncludedIndex %v", rf.me, args, rf.currentTerm, rf.lastIncludedIndex)
 	defer func() {
 		rf.mu.Unlock()
 	}()
 	defer rf.persist()
 
 	if args.Term < rf.currentTerm {
-		//DPrintf("server %v received install snapshot with term %d less than current term %d", rf.me, args.Term, rf.currentTerm)
+		DPrintf("server %v received install snapshot with term %d less than current term %d", rf.me, args.Term, rf.currentTerm)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -497,14 +497,11 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	//If existing log entry has same index and term as snapshot’s last included entry, retain log entries following it and reply
 	if rf.getLogLength() >= args.LastIncludedIndex && rf.getLogTerm(args.LastIncludedIndex) == args.LastIncludedTerm {
 		rf.logs = rf.getLogEntriesFromStart(args.LastIncludedIndex + 1)
-		//DPrintf("server %v logs after install snapshot %v retaining logs", rf.me, rf.logs)
+		DPrintf("server %v logs after install snapshot %v retaining logs", rf.me, rf.logs)
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
 		if rf.commitIndex < args.LastIncludedIndex {
 			rf.commitIndex = args.LastIncludedIndex
-		}
-		if rf.lastApplied < args.LastIncludedIndex {
-			rf.lastApplied = args.LastIncludedIndex
 		}
 		rf.applyCh <- ApplyMsg{
 			CommandIndex:  -1,
@@ -530,7 +527,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.persist()
 	// apply the snapshot message
-	//DPrintf("server %d sending snapshot to service", rf.me)
+	DPrintf("server %d sending snapshot to state machine", rf.me)
 	rf.applyCh <- ApplyMsg{
 		CommandIndex:  -1,
 		CommandValid:  false,
@@ -598,7 +595,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	args.Entries = args.Entries[j:]
 	rf.logs = append(rf.logs, args.Entries...)
 	//DPrintf("server %v logs after append entries %v", rf.me, rf.logs)
-	rf.PrintLog()
 
 	reply.Success = true
 
@@ -1065,11 +1061,14 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 		panic("snapshot index greater than commit index")
 	}
 	DPrintf("server %v received snapshot index: %d, current last included index %d, commit index %d", rf.me, index, rf.lastIncludedIndex, rf.commitIndex)
+	DPrintf("server %v logs before snapshot", rf.me)
+	rf.PrintLog()
 	rf.data = i
 	rf.lastIncludedTerm = rf.getLogTerm(index)
 	rf.logs = rf.getLogsEntriesFromStart(index)
 	DPrintf("server %v size %v", rf.me, len(rf.persister.ReadRaftState()))
 	DPrintf("server %v logs after snapshot", rf.me)
+	rf.PrintLog()
 	rf.lastIncludedIndex = index
 }
 

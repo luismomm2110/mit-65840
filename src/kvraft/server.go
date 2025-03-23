@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -294,7 +294,7 @@ func (kv *KVServer) applyOp() {
 
 		if _, ok := kv.completedRequestsById[op.ClientId]; ok {
 			if op.RequestId <= kv.completedRequestsById[op.ClientId].RequestId {
-				DPrintf("Server %d client %d requestId %d already completed key %v", kv.me, op.ClientId, op.RequestId, op.Key)
+				DPrintf("Server %d client %d requestId %d already completed key %v index %v", kv.me, op.ClientId, op.RequestId, op.Key, index)
 				kv.mu.Unlock()
 				kv.cond.Broadcast()
 				continue
