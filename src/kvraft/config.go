@@ -1,6 +1,9 @@
 package kvraft
 
-import "6.5840/labrpc"
+import (
+	"6.5840/labrpc"
+	"log"
+)
 import "testing"
 import "os"
 
@@ -81,11 +84,16 @@ func (cfg *config) cleanup() {
 // Maximum log size across all servers
 func (cfg *config) LogSize() int {
 	logsize := 0
+	maxServer := -1
 	for i := 0; i < cfg.n; i++ {
 		n := cfg.saved[i].RaftStateSize()
 		if n > logsize {
+			maxServer = i
 			logsize = n
 		}
+	}
+	if maxServer != -1 {
+		log.Printf("server %d has the largest log size %d\n", maxServer, logsize)
 	}
 	return logsize
 }

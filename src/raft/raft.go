@@ -109,6 +109,7 @@ type Raft struct {
 	grantVoteCh   chan bool
 	heartbeatCh   chan bool
 	firstLogIndex int // first log index after snapshot
+	applyCond     *sync.Cond
 
 	// snapshot
 	lastIncludedIndex int
@@ -191,6 +192,7 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.data = rf.persister.ReadSnapshot()
 	rf.commitIndex = rf.lastIncludedIndex
 	rf.lastApplied = rf.lastIncludedIndex
+	//DPrintf("Server %d restored state with term %d lastIncludedIndex %d", rf.me, rf.currentTerm, rf.lastIncludedIndex)
 }
 
 // RequestVote RPC arguments structure.
@@ -339,25 +341,42 @@ func (rf *Raft) isLogUpToDate(cLastIndex int, cLastTerm int) bool {
 
 // apply the committed logs.
 func (rf *Raft) applyLogs() {
-	var msgs []ApplyMsg
+	go func() {
+		for {
+			if rf.killed() {
+				return
+			}
+			// Wait until there are new logs to apply.
+			rf.mu.Lock()
+			for rf.lastApplied >= rf.commitIndex {
+				//DPrintf("server %d waiting for new logs to apply", rf.me)
+				rf.applyCond.Wait()
+			}
+			//DPrintf("server %d applying logs from %d to %d", rf.me, rf.lastApplied+1, rf.commitIndex)
+			// Apply all new logs.
+			start := rf.lastApplied + 1
+			end := rf.commitIndex
+			var msgs []ApplyMsg
+			for i := start; i <= end; i++ {
+				entry := rf.getLogEntry(i)
+				msgs = append(msgs, ApplyMsg{
+					CommandValid: true,
+					Command:      entry.Command,
+					CommandIndex: i,
+				})
+				rf.lastApplied = i
+			}
+			//DPrintf("server %d commit index %d", rf.me, rf.commitIndex)
+			//DPrintf("server %d last applied %d", rf.me, rf.lastApplied)
+			rf.mu.Unlock()
 
-	rf.mu.Lock()
-	//DPrintf("server %v applying logs from %d to %d with len log %d and last included index %d", rf.me, rf.lastApplied+1, rf.commitIndex, len(rf.logs), rf.lastIncludedIndex)
-	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-		//DPrintf("server %v applying log %d", rf.me, rf.getLogEntry(i))
-		msgs = append(msgs, ApplyMsg{
-			CommandValid: true,
-			Command:      rf.getLogEntry(i).Command,
-			CommandIndex: i,
-		})
-		rf.lastApplied = i
-	}
-	//DPrintf("server %v sending apply msgs %v", rf.me, msgs)
-	rf.mu.Unlock()
-
-	for _, msg := range msgs {
-		rf.applyCh <- msg
-	}
+			// Send the messages outside the lock.
+			for _, msg := range msgs {
+				//DPrintf("server %d sending apply msg %v", rf.me, msg)
+				rf.applyCh <- msg
+			}
+		}
+	}()
 }
 
 // RequestVote RPC handler.
@@ -490,7 +509,6 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.stepDownToFollower(args.Term)
 	}
 	rf.sendToChannel(rf.heartbeatCh, true)
-
 	reply.Success = true
 	reply.Term = args.Term
 
@@ -530,7 +548,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.persist()
 	// apply the snapshot message
-	//DPrintf("server %d sending snapshot to service", rf.me)
+	//DPrintf("server %d sending snapshot to state machine", rf.me)
 	rf.applyCh <- ApplyMsg{
 		CommandIndex:  -1,
 		CommandValid:  false,
@@ -545,11 +563,15 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 // AppendEntries RPC handler.
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if rf.killed() {
+		return
+	}
 	rf.mu.Lock()
 	defer func() {
 		rf.mu.Unlock()
 	}()
 	defer rf.persist()
+	//DPrintf("server %v received append entries with args %v", rf.me, args)
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -597,8 +619,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.logs = rf.getLogEntriesUntilEnd(truncatedIndex)
 	args.Entries = args.Entries[j:]
 	rf.logs = append(rf.logs, args.Entries...)
-	//DPrintf("server %v logs after append entries %v", rf.me, rf.logs)
-	rf.PrintLog()
+	DPrintf("server %v size logs after append entries %v", rf.me, rf.GetSize())
 
 	reply.Success = true
 
@@ -612,14 +633,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		} else {
 			rf.commitIndex = lastIndex
 		}
-		go rf.applyLogs()
+		//DPrintf("server %v commitIndex updated to %d", rf.me, rf.commitIndex)
+		rf.applyCond.Signal()
 	}
 }
 
 // send a AppendEntries RPC to a server.
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-
 	if !ok {
 		return
 	}
@@ -655,7 +676,12 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	} else {
 		// try to find the conflictTerm in log
 		newNextIndex := rf.getLastIndex()
+		//DPrintf("server %d reply %s", rf.me, reply)
 		for ; newNextIndex >= 0; newNextIndex-- {
+			if newNextIndex == rf.lastIncludedIndex {
+				newNextIndex = -1
+				break
+			}
 			if rf.getLogTerm(newNextIndex) == reply.ConflictTerm {
 				break
 			}
@@ -688,7 +714,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		//DPrintf("server %d with count %d and len %d after reply %v from %v", rf.me, count, len(rf.peers)/2, reply, server)
 		if count > len(rf.peers)/2 {
 			rf.commitIndex = n
-			go rf.applyLogs()
+			//DPrintf("server %d commitIndex updated to %d as leader", rf.me, rf.commitIndex)
+			rf.applyCond.Signal()
 			break
 		}
 	}
@@ -738,6 +765,7 @@ func (rf *Raft) sendInstallSnapshot(peer int) {
 		LastIncludedTerm:  rf.lastIncludedTerm,
 		Data:              rf.data,
 	}
+	//DPrintf("server %v sending install snapshot to server %v args %v", rf.me, peer, args)
 	reply := InstallSnapshotReply{}
 	rf.mu.Unlock()
 	//DPrintf("server %v sending install snapshot to server %v with args %v", rf.me, peer, args)
@@ -788,6 +816,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := rf.currentTerm
 	//DPrintf("server %v received command %v", rf.me, command)
 	rf.logs = append(rf.logs, LogEntry{term, command})
+	// size of logs
+	//DPrintf("server %v size of logs after receive %v", rf.me, rf.GetSize())
 
 	return rf.getLastIndex(), term, true
 }
@@ -833,7 +863,7 @@ func (rf *Raft) convertToLeader() {
 	for i := range rf.peers {
 		rf.nextIndex[i] = lastIndex
 	}
-	//DPrintf("server %d elected leader in term %d", rf.me, rf.currentTerm)
+	DPrintf("server %d elected leader in term %d", rf.me, rf.currentTerm)
 
 	rf.broadcastAppendEntries()
 }
@@ -935,10 +965,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.heartbeatCh = make(chan bool)
 	rf.logs = append(rf.logs, LogEntry{Term: 0})
 	rf.data = []byte{}
+	rf.applyCond = sync.NewCond(&rf.mu)
+
 	rf.readPersist(rf.persister.ReadRaftState())
 
 	// start the background server loop
 	go rf.runServer()
+
+	// start the apply thread
+	rf.applyLogs()
 
 	return rf
 }
@@ -1043,6 +1078,7 @@ func (rf *Raft) getLogTerm(index int) int {
 	defer func() {
 		if r := recover(); r != nil {
 			DPrintf("server %v panic in getLogTerm with index %d", rf.me, index)
+			DPrintf("Server %d last index is %d", rf.me, rf.getLastIndex())
 			rf.PrintLog()
 			panic(r)
 		}
@@ -1059,27 +1095,34 @@ func (rf *Raft) getLogTerm(index int) int {
 func (rf *Raft) Snapshot(index int, i []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
 	if index > rf.commitIndex {
 		DPrintf("server %v snapshot index %d greater than commit index %d", rf.me, index, rf.commitIndex)
 		panic("snapshot index greater than commit index")
 	}
-	DPrintf("server %v received snapshot index: %d, current last included index %d, commit index %d", rf.me, index, rf.lastIncludedIndex, rf.commitIndex)
+	if index <= rf.lastIncludedIndex {
+		return
+	}
+	//DPrintf("server %v received snapshot index: %d, current last included index %d, commit index %d", rf.me, index, rf.lastIncludedIndex, rf.commitIndex)
+	//DPrintf("server %v logs before snapshot", rf.me)
+	rf.PrintLog()
 	rf.data = i
 	rf.lastIncludedTerm = rf.getLogTerm(index)
 	rf.logs = rf.getLogsEntriesFromStart(index)
-	DPrintf("server %v size %v", rf.me, len(rf.persister.ReadRaftState()))
-	DPrintf("server %v logs after snapshot", rf.me)
+	//DPrintf("server %v snapshot size %v", rf.me, len(rf.persister.ReadRaftState()))
+	//DPrintf("server %v logs after snapshot", rf.me)
+	//rf.PrintLog()
 	rf.lastIncludedIndex = index
+	rf.persist()
 }
 
 func (rf *Raft) PrintLog() {
-	DPrintf("server %v printing logs", rf.me)
-	for i, entry := range rf.logs {
-		if rf.lastIncludedIndex != 0 {
-			i++
-		}
-		DPrintf("server %v Index: %d, rf.me, Term: %d, Command: %v (printing log)", rf.me, i+rf.lastIncludedIndex, entry.Term, entry.Command)
-	}
-	DPrintf("server %v len of logs: %d", rf.me, len(rf.logs))
+	//DPrintf("server %v printing logs", rf.me)
+	return
+	//for i, entry := range rf.logs {
+	//	if rf.lastIncludedIndex != 0 {
+	//		i++
+	//	}
+	//	DPrintf("server %v Index: %d, rf.me, Term: %d, Command: %v (printing log)", rf.me, i+rf.lastIncludedIndex, entry.Term, entry.Command)
+	//}
+	//DPrintf("server %v len of logs: %d", rf.me, len(rf.logs))
 }

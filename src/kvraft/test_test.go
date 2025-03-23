@@ -1,6 +1,9 @@
 package kvraft
 
-import "6.5840/porcupine"
+import (
+	"6.5840/porcupine"
+	"log"
+)
 import "6.5840/models"
 import "testing"
 import "strconv"
@@ -319,14 +322,14 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 		}
 
 		if crash {
-			// log.Printf("shutdown servers\n")
+			log.Printf("shutdown servers\n")
 			for i := 0; i < nservers; i++ {
 				cfg.ShutdownServer(i)
 			}
 			// Wait for a while for servers to shutdown, since
 			// shutdown isn't a real crash and isn't instantaneous
 			time.Sleep(electionTimeout)
-			// log.Printf("restart servers\n")
+			log.Printf("restart servers\n")
 			// crash and re-start all
 			for i := 0; i < nservers; i++ {
 				cfg.StartServer(i)
@@ -334,13 +337,13 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			cfg.ConnectAll()
 		}
 
-		// log.Printf("wait for clients\n")
+		log.Printf("wait for clients\n")
 		for i := 0; i < nclients; i++ {
-			// log.Printf("read from clients %d\n", i)
+			log.Printf("read from clients %d\n", i)
 			j := <-clnts[i]
-			// if j < 10 {
-			// 	log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
-			// }
+			if j < 10 {
+				log.Printf("Warning: client %d managed to perform only %d put operations in 1 sec?\n", i, j)
+			}
 			key := strconv.Itoa(i)
 			// log.Printf("Check %v for client %d\n", j, i)
 			v := Get(cfg, ck, key, opLog, 0)
@@ -353,6 +356,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			// Check maximum after the servers have processed all client
 			// requests and had time to checkpoint.
 			sz := cfg.LogSize()
+			log.Printf("Log size in the final check: %v\n", sz)
 			if sz > 8*maxraftstate {
 				t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
 			}
@@ -670,15 +674,18 @@ func TestSnapshotSize4B(t *testing.T) {
 		check(cfg, t, ck, "x", "1")
 	}
 
+	log.Printf("Finished putting 200 entries\n")
+
 	//check that servers have thrown away most of their log entries
 	sz := cfg.LogSize()
-	DPrintf("Log size: %v\n", sz)
+	DPrintf("Log size in final check: %v\n", sz)
 	if sz > 8*maxraftstate {
 		t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
 	}
 
 	// check that the snapshots are not unreasonably large
 	ssz := cfg.SnapshotSize()
+	DPrintf("Snapshot size in final check: %v\n", ssz)
 	if ssz > maxsnapshotstate {
 		t.Fatalf("snapshot too large (%v > %v)", ssz, maxsnapshotstate)
 	}

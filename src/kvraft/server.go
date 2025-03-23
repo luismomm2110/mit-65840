@@ -104,11 +104,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	// index, term, isLeader
 	kv.mu.Lock()
-	//DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
+	DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
 	if requestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 		if args.RequestId <= requestInfo.RequestId {
-			DPrintf("Server %d client %d requestId %d already completed key %v",
-				kv.me, args.ClientId, args.RequestId, args.Key)
+			//DPrintf("Server %d client %d requestId %d already completed key %v",
+			//	kv.me, args.ClientId, args.RequestId, args.Key)
 			reply.Err = OK
 			reply.Value = kv.values[args.Key]
 			kv.mu.Unlock()
@@ -150,11 +150,12 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		RequestId: args.RequestId,
 	}
 	kv.mu.Lock()
+	DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 
 	if lastRequestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 		if args.RequestId <= lastRequestInfo.RequestId {
-			DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
-				kv.me, args.ClientId, args.RequestId, args.Key)
+			//DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
+			//	kv.me, args.ClientId, args.RequestId, args.Key)
 			reply.Err = OK
 			kv.mu.Unlock()
 			return
@@ -167,7 +168,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+	//DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for {
@@ -177,7 +178,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.Err = ErrWrongLeader
 				return
 			}
-			DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+			//DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 			reply.Err = OK
 			return
 		}
@@ -238,7 +239,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.cond = sync.NewCond(&kv.mu)
 	state := kv.rf.ReadSnapshot()
 	if len(state) > 0 {
-		DPrintf("Server %d restarting from snapshot", kv.me)
+		//DPrintf("Server %d restarting from snapshot", kv.me)
 		kv.mu.Lock()
 		kv.syncWithSnapshot(state)
 		kv.mu.Unlock()
@@ -263,74 +264,87 @@ func (kv *KVServer) syncWithSnapshot(state []byte) {
 	kv.completedRequestsById = snapshot.CompletedRequestsById
 	kv.LastSeenIndex = snapshot.LastSeenIndex
 	kv.PrintSnapshot(snapshot)
-	DPrintf("server %d snapshot sync completed", kv.me)
+	//DPrintf("server %d snapshot sync completed", kv.me)
 	kv.rf.PrintLog()
 }
 
 func (kv *KVServer) PrintSnapshot(snapshot Snapshot) {
 	// Format Values with a break line for each key-value pair
-	DPrintf("Server %d printing snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
+	//DPrintf("Server %d printing snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
 	var formattedValues string
 	for key, value := range snapshot.Values {
 		formattedValues += fmt.Sprintf("\n\tKey: %q, Value: %q", key, value)
 	}
 
 	// Print the formatted snapshot
-	DPrintf("Server %d snapshot %s", kv.me, formattedValues)
+	//DPrintf("Server %d snapshot %s", kv.me, formattedValues)
 }
 
 func (kv *KVServer) applyOp() {
+	if kv.killed() {
+		return
+	}
 	for msg := range kv.applyCh {
 		kv.mu.Lock()
 		if msg.SnapshotValid {
-			DPrintf("Server %d received snapshot %d", kv.me, msg.SnapshotIndex)
+			DPrintf("Server %d received snapshot %d in state machine", kv.me, msg.SnapshotIndex)
+			kv.syncWithSnapshot(msg.Snapshot)
 			kv.mu.Unlock()
 			continue
 		}
 
 		index := msg.CommandIndex
 		op := msg.Command.(Op)
-		DPrintf("Server %d applying op %v at index %d", kv.me, op, index)
+		if index <= kv.LastSeenIndex {
+			DPrintf("Server %d index %d already seen", kv.me, index)
+			kv.mu.Unlock()
+			continue
+		}
+		kv.LastSeenIndex = index
 
+		//DPrintf("Server %d applying op %v at index %d", kv.me, op, index)
+		apply := true
 		if _, ok := kv.completedRequestsById[op.ClientId]; ok {
 			if op.RequestId <= kv.completedRequestsById[op.ClientId].RequestId {
-				DPrintf("Server %d client %d requestId %d already completed key %v", kv.me, op.ClientId, op.RequestId, op.Key)
-				kv.mu.Unlock()
-				kv.cond.Broadcast()
-				continue
+				//DPrintf("Server %d client %d requestId %d already completed key %v index %v", kv.me, op.ClientId, op.RequestId, op.Key, index)
+				apply = false
 			}
 		}
 
-		switch op.Type {
-		case PutOp:
-			kv.values[op.Key] = op.Value
-		case AppendOp:
-			kv.values[op.Key] += op.Value
-		}
-		DPrintf("Server %d applied op %v at index %d with key %v", kv.me, op, index, kv.values[op.Key])
-		lastRequestId := kv.completedRequestsById[op.ClientId].RequestId
-		if op.RequestId > lastRequestId {
-			kv.completedRequestsById[op.ClientId] = RequestInfo{
-				RequestId:     op.RequestId,
-				CommitedIndex: msg.CommandIndex,
+		if apply {
+			switch op.Type {
+			case PutOp:
+				kv.values[op.Key] = op.Value
+			case AppendOp:
+				kv.values[op.Key] += op.Value
+			}
+			//DPrintf("Server %d applied op %v at index %d with key %v", kv.me, op, index, kv.values[op.Key])
+			lastRequestId := kv.completedRequestsById[op.ClientId].RequestId
+			if op.RequestId > lastRequestId {
+				kv.completedRequestsById[op.ClientId] = RequestInfo{
+					RequestId:     op.RequestId,
+					CommitedIndex: msg.CommandIndex,
+				}
+
 			}
 		}
-		kv.snapshotRaftState(index)
+
+		kv.snapshotRaftState()
 		kv.mu.Unlock()
 		kv.cond.Broadcast()
 	}
 }
 
-func (kv *KVServer) snapshotRaftState(lastSeenIndex int) {
+func (kv *KVServer) snapshotRaftState() {
+	if kv.killed() {
+		return
+
+	}
 	if kv.maxraftstate == -1 {
 		return
 	}
 	// compare with maxraftstate
 	snapshotSize := kv.rf.GetSize()
-	if lastSeenIndex <= kv.LastSeenIndex {
-		return
-	}
-	kv.LastSeenIndex = lastSeenIndex
 	if snapshotSize >= kv.maxraftstate {
 		// sent a snapshot to raft unit
 		DPrintf("Server %d making snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
