@@ -122,7 +122,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	//DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
+	DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for {
@@ -132,7 +132,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				return
 			}
 			reply.Value = kv.values[args.Key]
-			//DPrintf("SERVER %d GET client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, reply.Value)
+			DPrintf("SERVER %d GET client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, reply.Value)
 			reply.Err = OK
 			return
 		}
@@ -154,8 +154,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if lastRequestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 		if args.RequestId <= lastRequestInfo.RequestId {
-			//DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
-			//	kv.me, args.ClientId, args.RequestId, args.Key)
+			DPrintf("Server %d PutAppend client %d requestId %d already completed key %v",
+				kv.me, args.ClientId, args.RequestId, args.Key)
 			reply.Err = OK
 			kv.mu.Unlock()
 			return
@@ -168,7 +168,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	//DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+	DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	for {
@@ -178,7 +178,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.Err = ErrWrongLeader
 				return
 			}
-			//DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+			DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 			reply.Err = OK
 			return
 		}
@@ -302,11 +302,11 @@ func (kv *KVServer) applyOp() {
 		}
 		kv.LastSeenIndex = index
 
-		//DPrintf("Server %d applying op %v at index %d", kv.me, op, index)
+		DPrintf("Server %d applying op %v at index %d", kv.me, op, index)
 		apply := true
 		if _, ok := kv.completedRequestsById[op.ClientId]; ok {
 			if op.RequestId <= kv.completedRequestsById[op.ClientId].RequestId {
-				//DPrintf("Server %d client %d requestId %d already completed key %v index %v", kv.me, op.ClientId, op.RequestId, op.Key, index)
+				DPrintf("Server %d client %d requestId %d already completed key %v index %v", kv.me, op.ClientId, op.RequestId, op.Key, index)
 				apply = false
 			}
 		}
@@ -318,7 +318,7 @@ func (kv *KVServer) applyOp() {
 			case AppendOp:
 				kv.values[op.Key] += op.Value
 			}
-			//DPrintf("Server %d applied op %v at index %d with key %v", kv.me, op, index, kv.values[op.Key])
+			DPrintf("Server %d applied op %v at index %d with key %v", kv.me, op, index, kv.values[op.Key])
 			lastRequestId := kv.completedRequestsById[op.ClientId].RequestId
 			if op.RequestId > lastRequestId {
 				kv.completedRequestsById[op.ClientId] = RequestInfo{
