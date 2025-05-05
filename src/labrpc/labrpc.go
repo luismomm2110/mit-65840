@@ -59,6 +59,14 @@ import "math/rand"
 import "time"
 import "sync/atomic"
 
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+}
+
 type reqMsg struct {
 	endname  interface{} // name of sending ClientEnd
 	svcMeth  string      // e.g. "Raft.AppendEntries"
@@ -173,6 +181,11 @@ func (rn *Network) Reliable(yes bool) {
 	defer rn.mu.Unlock()
 
 	rn.reliable = yes
+	if !yes {
+		DPrintf("Network configured to be unreliable (rails mode enabled)\n")
+	} else {
+		DPrintf("Network configured to be reliable (rails mode disabled)\n")
+	}
 }
 
 func (rn *Network) LongReordering(yes bool) {
@@ -180,6 +193,11 @@ func (rn *Network) LongReordering(yes bool) {
 	defer rn.mu.Unlock()
 
 	rn.longReordering = yes
+	if yes {
+		DPrintf("Network configured with long reordering enabled\n")
+	} else {
+		DPrintf("Network configured with long reordering disabled\n")
+	}
 }
 
 func (rn *Network) LongDelays(yes bool) {
@@ -187,6 +205,11 @@ func (rn *Network) LongDelays(yes bool) {
 	defer rn.mu.Unlock()
 
 	rn.longDelays = yes
+	if yes {
+		DPrintf("Network configured with long delays enabled\n")
+	} else {
+		DPrintf("Network configured with long delays disabled\n")
+	}
 }
 
 func (rn *Network) readEndnameInfo(endname interface{}) (enabled bool,
@@ -222,11 +245,13 @@ func (rn *Network) processReq(req reqMsg) {
 		if reliable == false {
 			// short delay
 			ms := (rand.Int() % 27)
+			DPrintf("Network rails: adding delay of %dms to %s\n", ms, req.svcMeth)
 			time.Sleep(time.Duration(ms) * time.Millisecond)
 		}
 
 		if reliable == false && (rand.Int()%1000) < 100 {
 			// drop the request, return as if timeout
+			DPrintf("Network rails: dropping request for %s\n", req.svcMeth)
 			req.replyCh <- replyMsg{false, nil}
 			return
 		}
@@ -274,10 +299,12 @@ func (rn *Network) processReq(req reqMsg) {
 			req.replyCh <- replyMsg{false, nil}
 		} else if reliable == false && (rand.Int()%1000) < 100 {
 			// drop the reply, return as if timeout
+			DPrintf("Network rails: dropping reply for %s\n", req.svcMeth)
 			req.replyCh <- replyMsg{false, nil}
 		} else if longreordering == true && rand.Intn(900) < 600 {
 			// delay the response for a while
 			ms := 200 + rand.Intn(1+rand.Intn(2000))
+			DPrintf("Network rails: long reordering delay of %dms for %s\n", ms, req.svcMeth)
 			// Russ points out that this timer arrangement will decrease
 			// the number of goroutines, so that the race
 			// detector is less likely to get upset.
@@ -296,10 +323,12 @@ func (rn *Network) processReq(req reqMsg) {
 			// let Raft tests check that leader doesn't send
 			// RPCs synchronously.
 			ms = (rand.Int() % 7000)
+			DPrintf("Network rails: long delay of %dms for disconnected server call to %s\n", ms, req.svcMeth)
 		} else {
 			// many kv tests require the client to try each
 			// server in fairly rapid succession.
 			ms = (rand.Int() % 100)
+			DPrintf("Network rails: short delay of %dms for disconnected server call to %s\n", ms, req.svcMeth)
 		}
 		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
 			req.replyCh <- replyMsg{false, nil}
