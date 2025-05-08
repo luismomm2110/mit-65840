@@ -68,15 +68,15 @@ func (ck *Clerk) Get(key string) string {
 				{
 					if reply.Err == OK {
 						ck.leader = serverIndex
-						DPrintf("Client %d GET REQUESTID %d COMPLETED and answer is %v", ck.me, args.RequestId, reply.Value)
+						DPrintf("Client %d GET REQUESTID %d COMPLETED and answer is %v and leafer %d", ck.me, args.RequestId, reply.Value, serverIndex)
 						return reply.Value
 					} else if reply.Err == ErrWrongLeader {
-						//DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
+						DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
 					}
 				}
 			case <-time.After(20 * time.Millisecond):
 				{
-					//DPrintf("Client %d Get key %v value from server %d timeout", ck.me, key, serverIndex)
+					DPrintf("Client %d Get key %v value from server %d timeout", ck.me, key, serverIndex)
 					continue
 				}
 			}
@@ -119,16 +119,16 @@ func (ck *Clerk) PutAppend(key string, value string, op OperationType) {
 			case ok := <-ok:
 				if ok {
 					if reply.Err == OK {
-						DPrintf("Client %d PUTAPPEND REQUESTID %d COMPLETED and answer is %v", ck.me, args.RequestId, reply.String())
+						DPrintf("Client %d PUTAPPEND REQUESTID %d COMPLETED and answer is %v and leader %d", ck.me, args.RequestId, reply.String(), serverIndex)
 						ck.leader = serverIndex
 						return
 					} else if reply.Err == ErrWrongLeader {
-						//DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
+						DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
 					}
 				}
 			case <-time.After(20 * time.Millisecond):
 				{
-					//DPrintf("Client %d PutAppend key %v value %v to server %d timeout", ck.me, key, value, serverIndex)
+					DPrintf("Client %d PutAppend key %v value %v to server %d timeout", ck.me, key, value, serverIndex)
 					continue
 				}
 			}

@@ -107,8 +107,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	DPrintf("Server %d Get client %d requestId %d key %s", kv.me, args.ClientId, args.RequestId, args.Key)
 	if requestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 		if args.RequestId <= requestInfo.RequestId {
-			//DPrintf("Server %d client %d requestId %d already completed key %v",
-			//	kv.me, args.ClientId, args.RequestId, args.Key)
+			DPrintf("Server %d client %d requestId %d already completed key %v",
+				kv.me, args.ClientId, args.RequestId, args.Key)
 			reply.Err = OK
 			reply.Value = kv.values[args.Key]
 			kv.mu.Unlock()
@@ -118,6 +118,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Unlock()
 	receivedIndex, _, leader := kv.rf.Start(op)
 	if !leader {
+		DPrintf("Server %d Get client %d requestId %d key %s reply ErrWrongLeader", kv.me, args.ClientId, args.RequestId, args.Key)
 		reply.Err = ErrWrongLeader
 		return
 	}
@@ -132,7 +133,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 				return
 			}
 			reply.Value = kv.values[args.Key]
-			DPrintf("SERVER %d GET client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, reply.Value)
+			DPrintf("SERVER %d GET client %d requestId %d key %s value %s reply ok", kv.me, args.ClientId, args.RequestId, args.Key, reply.Value)
 			reply.Err = OK
 			return
 		}
@@ -164,6 +165,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Unlock()
 	receivedIndex, _, leader := kv.rf.Start(op)
 	if !leader {
+		DPrintf("Server %d PutAppend client %d requestId %d key %s reply ErrWrongLeader", kv.me, args.ClientId, args.RequestId, args.Key)
 		reply.Err = ErrWrongLeader
 		return
 	}
@@ -175,10 +177,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		if requestInfo, ok := kv.completedRequestsById[args.ClientId]; ok {
 			commitedIndex := requestInfo.CommitedIndex
 			if commitedIndex != receivedIndex {
+				DPrintf("Server %d PutAppend client %d requestId %d key %s value %s reply ErrWrongLeader", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 				reply.Err = ErrWrongLeader
 				return
 			}
-			DPrintf("Server %d PutAppend client %d requestId %d key %s value %s", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
+			DPrintf("Server %d PutAppend client %d requestId %d key %s value %s reply ok", kv.me, args.ClientId, args.RequestId, args.Key, args.Value)
 			reply.Err = OK
 			return
 		}
@@ -239,7 +242,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.cond = sync.NewCond(&kv.mu)
 	state := kv.rf.ReadSnapshot()
 	if len(state) > 0 {
-		//DPrintf("Server %d restarting from snapshot", kv.me)
+		DPrintf("Server %d restarting from snapshot", kv.me)
 		kv.mu.Lock()
 		kv.syncWithSnapshot(state)
 		kv.mu.Unlock()
@@ -264,20 +267,18 @@ func (kv *KVServer) syncWithSnapshot(state []byte) {
 	kv.completedRequestsById = snapshot.CompletedRequestsById
 	kv.LastSeenIndex = snapshot.LastSeenIndex
 	kv.PrintSnapshot(snapshot)
-	//DPrintf("server %d snapshot sync completed", kv.me)
-	kv.rf.PrintLog()
+	DPrintf("server %d snapshot sync completed", kv.me)
 }
 
 func (kv *KVServer) PrintSnapshot(snapshot Snapshot) {
-	// Format Values with a break line for each key-value pair
-	//DPrintf("Server %d printing snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
+	DPrintf("Server %d printing snapshot with last seen index %d", kv.me, kv.LastSeenIndex)
 	var formattedValues string
 	for key, value := range snapshot.Values {
 		formattedValues += fmt.Sprintf("\n\tKey: %q, Value: %q", key, value)
 	}
 
 	// Print the formatted snapshot
-	//DPrintf("Server %d snapshot %s", kv.me, formattedValues)
+	DPrintf("Server %d snapshot %s", kv.me, formattedValues)
 }
 
 func (kv *KVServer) applyOp() {
