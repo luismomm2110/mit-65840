@@ -59,7 +59,7 @@ import "math/rand"
 import "time"
 import "sync/atomic"
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {

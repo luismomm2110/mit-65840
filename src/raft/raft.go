@@ -20,6 +20,7 @@ package raft
 import (
 	"6.5840/labgob"
 	"bytes"
+	"encoding/gob"
 	"fmt"
 	"log"
 
@@ -147,6 +148,16 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.state == Leader
 }
 
+type RequestInfo struct {
+	RequestId     int64
+	CommitedIndex int
+}
+type Snapshot struct {
+	Values                map[string]string
+	CompletedRequestsById map[int]RequestInfo
+	LastSeenIndex         int
+}
+
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
@@ -166,8 +177,19 @@ func (rf *Raft) persist() {
 	if err != nil {
 		panic("error encoding state")
 	}
+	var snapshot Snapshot
+	var snapshotCopy = clone(rf.data)
+	decoderoutro := gob.NewDecoder(bytes.NewReader(snapshotCopy))
 	rf.persister.Save(buffer.Bytes(), rf.data)
-	//DPrintf("server %d persisted state with term %d lastIncludedIndex %d", rf.me, rf.currentTerm, rf.lastIncludedIndex)
+	if len(rf.data) <= 0 {
+		return
+	}
+	if err := decoderoutro.Decode(&snapshot); err != nil {
+		log.Fatalf("Erro ao decodificar snapshot: %v", err)
+	}
+
+	DPrintf("server %d persisted state with term %d lastIncludedIndex %d", rf.me, rf.currentTerm, rf.lastIncludedIndex)
+	DPrintf("server %d data %d", rf.me, snapshot.LastSeenIndex)
 }
 
 // restore previously persisted state.
@@ -192,7 +214,7 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.data = rf.persister.ReadSnapshot()
 	rf.commitIndex = rf.lastIncludedIndex
 	rf.lastApplied = rf.lastIncludedIndex
-	//DPrintf("Server %d restored state with term %d lastIncludedIndex %d", rf.me, rf.currentTerm, rf.lastIncludedIndex)
+	DPrintf("Server %d restored state with term %d lastIncludedIndex %d", rf.me, rf.currentTerm, rf.lastIncludedIndex)
 }
 
 // RequestVote RPC arguments structure.
@@ -492,7 +514,7 @@ func (rf *Raft) broadcastRequestVote() {
 // deve mandar applych to the service in an ApplyMsg
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
-	//DPrintf("server %v received install snapshot with args %v term %v and current lastIncludedIndex %v", rf.me, args, rf.currentTerm, rf.lastIncludedIndex)
+	DPrintf("server %v received install snapshot with args %v term %v and current lastIncludedIndex %v", rf.me, args, rf.currentTerm, rf.lastIncludedIndex)
 	defer func() {
 		rf.mu.Unlock()
 	}()
@@ -546,9 +568,8 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	//When a follower's Raft code receives an InstallSnapshot RPC, it can use the applyCh to send the snapshot to the service in an ApplyMsg.
 	rf.data = args.Data
 
-	rf.persist()
 	// apply the snapshot message
-	//DPrintf("server %d sending snapshot to state machine", rf.me)
+	DPrintf("server %d sending snapshot to state machine", rf.me)
 	rf.applyCh <- ApplyMsg{
 		CommandIndex:  -1,
 		CommandValid:  false,
@@ -778,10 +799,10 @@ func (rf *Raft) sendInstallSnapshot(peer int) {
 		LastIncludedTerm:  rf.lastIncludedTerm,
 		Data:              rf.data,
 	}
-	//DPrintf("server %v sending install snapshot to server %v args %v", rf.me, peer, args)
+	DPrintf("server %v sending install snapshot to server %v args %v", rf.me, peer, args)
 	reply := InstallSnapshotReply{}
 	rf.mu.Unlock()
-	//DPrintf("server %v sending install snapshot to server %v with args %v", rf.me, peer, args)
+	DPrintf("server %v sending install snapshot to server %v with args %v", rf.me, peer, args)
 	valid := rf.peers[peer].Call("Raft.InstallSnapshot", &args, &reply)
 	//DPrintf("server %v received install snapshot reply from server %v with reply %v and it valid %v", rf.me, peer, reply, valid)
 	if !valid {
@@ -1108,6 +1129,7 @@ func (rf *Raft) getLogTerm(index int) int {
 func (rf *Raft) Snapshot(index int, i []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	defer rf.persist()
 	if index > rf.commitIndex {
 		DPrintf("server %v snapshot index %d greater than commit index %d", rf.me, index, rf.commitIndex)
 		panic("snapshot index greater than commit index")
@@ -1125,7 +1147,6 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 	//DPrintf("server %v logs after snapshot", rf.me)
 	//rf.PrintLog()
 	rf.lastIncludedIndex = index
-	rf.persist()
 }
 
 func (rf *Raft) PrintLog() {
