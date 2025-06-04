@@ -1,6 +1,9 @@
 package kvraft
 
-import "6.5840/porcupine"
+import (
+	"6.5840/porcupine"
+	"log"
+)
 import "6.5840/models"
 import "testing"
 import "strconv"
@@ -250,10 +253,11 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 	ch_partitioner := make(chan bool)
 	clnts := make([]chan int, nclients)
 	for i := 0; i < nclients; i++ {
+		log.Printf("make channel for client %d\n", i)
 		clnts[i] = make(chan int)
 	}
 	for i := 0; i < 3; i++ {
-		// log.Printf("Iteration %v\n", i)
+		log.Printf("Iteration %v\n", i)
 		atomic.StoreInt32(&done_clients, 0)
 		atomic.StoreInt32(&done_partitioner, 0)
 		go spawn_clients_and_wait(t, cfg, nclients, func(cli int, myck *Clerk, t *testing.T) {

@@ -1,15 +1,19 @@
 package kvraft
 
-import "6.5840/labrpc"
+import (
+	"6.5840/labrpc"
+	"sync/atomic"
+	"time"
+)
 import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	clientId      int64
-	requestId     int64 // monotonically increasing
-	currentLeader int
+	leader           int
+	me               int64
+	currentRequestId int64
 }
 
 func nrand() int64 {
@@ -21,12 +25,13 @@ func nrand() int64 {
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
+	ck.me = int64(nrand())
+	DPrintf("Client %d created", ck.me)
 	ck.servers = servers
 	// You'll have to add code here.
-	ck.clientId = nrand()
-	ck.requestId = 0
-	ck.currentLeader = 0
-	DPrintf("clientID %v", ck.clientId)
+	nBig, _ := rand.Int(rand.Reader, big.NewInt(int64(len(servers))))
+	ck.leader = int(nBig.Int64() + 1)
+	atomic.StoreInt64(&ck.currentRequestId, 0)
 	return ck
 }
 
@@ -35,35 +40,49 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // keeps trying forever in the face of all other errors.
 //
 // you can send an RPC with code like this:
-// ok := ck.servers[i].Call("KVServer."+op, &args, &reply)
+// ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
 //
 // the types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-
-	// You will have to modify this function.
-	ck.requestId += 1
-	DPrintf("get key: %v, reequestId: %v, clientID %v", key, ck.requestId, ck.clientId)
-	ok := false
-	reply := GetReply{}
-	for !ok {
-		args := GetArgs{Key: key, ClientId: ck.clientId, RequestId: ck.requestId}
-		// todo aqui está 0 chumbado apenas
-		ok = ck.servers[0].Call("KVServer."+"Get", &args, &reply)
-		if reply.Err == OK {
-			ok = true
-		}
-		if reply.Err == ErrNoKey {
-			ok = false
-			return ""
-		}
-		if reply.Err == ErrWrongLeader {
-			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
-			ok = false
+	requestId := atomic.AddInt64(&ck.currentRequestId, 1)
+	ck.currentRequestId = requestId
+	args := GetArgs{
+		Key:       key,
+		RequestId: requestId,
+		ClientId:  ck.me,
+	}
+	numServers := len(ck.servers)
+	start := ck.leader
+	for {
+		for offset := 0; offset < numServers; offset++ {
+			serverIndex := (start + offset) % numServers
+			reply := GetReply{}
+			ok := make(chan bool)
+			DPrintf("Client %d SENDING GET %v to server %v", ck.me, args, serverIndex)
+			go func() {
+				ok <- ck.servers[serverIndex].Call("KVServer.Get", &args, &reply)
+			}()
+			select {
+			case <-ok:
+				{
+					if reply.Err == OK {
+						ck.leader = serverIndex
+						DPrintf("Client %d GET REQUESTID %d COMPLETED and leader is %v", ck.me, args.RequestId, serverIndex)
+						return reply.Value
+					} else if reply.Err == ErrWrongLeader {
+						//DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
+					}
+				}
+			case <-time.After(30 * time.Millisecond):
+				{
+					//DPrintf("Client %d Get key %v value from server %d timeout", ck.me, key, serverIndex)
+					continue
+				}
+			}
 		}
 	}
-	return reply.Value
 }
 
 // shared by Put and Append.
@@ -76,19 +95,50 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	ck.requestId += 1
-	reply := PutAppendReply{}
-	ok := false
-	for !ok {
-		args := PutAppendArgs{Key: key, Value: value, ClientId: ck.clientId, RequestId: ck.requestId}
-		//DPrintf("PutAppend key: %v, value: %v , requestId: %v, clientID %v", key, value, ck.requestId, ck.clientId)
-		ok = ck.servers[0].Call("KVServer."+"Append", &args, &reply)
-		err := reply.Err
-		if err == OK {
-			ok = true
-		} else if err == ErrWrongLeader {
-			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
-			ok = false
+	requestId := atomic.AddInt64(&ck.currentRequestId, 1)
+	ck.currentRequestId = requestId
+	args := PutAppendArgs{
+		Key:       key,
+		Value:     value,
+		RequestId: requestId,
+		ClientId:  ck.me,
+	}
+
+	numServers := len(ck.servers)
+	start := ck.leader
+	for {
+		for offset := 0; offset < numServers; offset++ {
+			serverIndex := (start + offset) % numServers
+			reply := PutAppendReply{}
+			ok := make(chan bool)
+			var method string
+			if op == "Put" {
+				method = "KVServer.Put"
+				DPrintf("Client %d SENDING Put %v to server %v", ck.me, args, serverIndex)
+			} else {
+				DPrintf("Client %d SENDING Append %v to server %v", ck.me, args, serverIndex)
+				method = "KVServer.Append"
+			}
+			go func() {
+				ok <- ck.servers[serverIndex].Call(method, &args, &reply)
+			}()
+			select {
+			case ok := <-ok:
+				if ok {
+					if reply.Err == OK {
+						DPrintf("Client %d PUTAPPEND REQUESTID %d COMPLETED and leader is %v", ck.me, args.RequestId, serverIndex)
+						ck.leader = serverIndex
+						return
+					} else if reply.Err == ErrWrongLeader {
+						//DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
+					}
+				}
+			case <-time.After(30 * time.Millisecond):
+				{
+					//DPrintf("Client %d PutAppend key %v value %v to server %d timeout", ck.me, key, value, serverIndex)
+					continue
+				}
+			}
 		}
 	}
 	//DPrintf("append reply: %v, clientID %v, requestId %v", reply.Value, ck.clientId, ck.requestId)

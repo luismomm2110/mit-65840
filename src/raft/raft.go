@@ -132,7 +132,6 @@ type RaftState struct {
 	//This happens since the commitIndex and lastApplied are not persisted, and so Raft doesn’t know that those log entries have already been applied.
 	//The fix for this is to introduce a piece of persistent state to Raft that records what “real” index the first entry in Raft’s persisted log corresponds to.
 	//This can then be compared to the loaded snapshot’s lastIncludedIndex to determine what elements at the head of the log to discard.
-	// TODO ver se precisa mesmo
 	//FirstLogIndex int
 }
 
