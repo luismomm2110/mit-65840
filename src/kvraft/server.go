@@ -17,8 +17,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 	if Debug {
 		log.Printf(format, a...)
+		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	}
-	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	return
 }
 
