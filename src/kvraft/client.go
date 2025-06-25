@@ -75,7 +75,7 @@ func (ck *Clerk) Get(key string) string {
 						//DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
 					}
 				}
-			case <-time.After(30 * time.Millisecond):
+			case <-time.After(20 * time.Millisecond):
 				{
 					//DPrintf("Client %d Get key %v value from server %d timeout", ck.me, key, serverIndex)
 					continue
@@ -133,7 +133,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 						//DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
 					}
 				}
-			case <-time.After(30 * time.Millisecond):
+			case <-time.After(20 * time.Millisecond):
 				{
 					//DPrintf("Client %d PutAppend key %v value %v to server %d timeout", ck.me, key, value, serverIndex)
 					continue

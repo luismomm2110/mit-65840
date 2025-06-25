@@ -87,6 +87,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		kv.mu.Unlock()
 		return
 	}
+	kv.mu.Unlock()
 	DPrintf("Server %d received Get request for key %s", kv.me, args)
 	op := Op{
 		Key:       args.Key,
@@ -94,22 +95,23 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		RequestId: args.RequestId,
 		ClientId:  args.ClientId,
 	}
-	kv.mu.Unlock()
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	kv.mu.Lock()
-	_, existClient := kv.chanByRequestIdByClientId[args.ClientId]
-	if !existClient {
-		kv.chanByRequestIdByClientId[args.ClientId] = make(map[int64]chan raft.ApplyMsg) // create a map for clientId if it doesn't exist
+	clientChans, ok := kv.chanByRequestIdByClientId[args.ClientId]
+	if !ok {
+		clientChans = make(map[int64]chan raft.ApplyMsg)
+		kv.chanByRequestIdByClientId[args.ClientId] = clientChans
 	}
-	_, exists := kv.chanByRequestIdByClientId[args.ClientId][args.RequestId]
-	if !exists {
-		kv.chanByRequestIdByClientId[args.ClientId][args.ClientId] = make(chan raft.ApplyMsg, 1) // create a buffered channel to avoid blocking
+	c, ok := clientChans[args.RequestId]
+	if !ok {
+		c = make(chan raft.ApplyMsg, 1)
+		clientChans[args.RequestId] = c
 	}
-	c := kv.chanByRequestIdByClientId[args.ClientId][args.RequestId]
+	//clientChans[args.RequestId] = nil // remove the channel after use
 	DPrintf("Server %d waiting get for request %v", kv.me, args)
 	kv.mu.Unlock()
 	<-c
@@ -131,6 +133,7 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 		kv.mu.Unlock()
 		return
 	}
+	kv.mu.Unlock()
 	DPrintf("Server %d received Put request for key %s", kv.me, args)
 	op := Op{
 		Key:       args.Key,
@@ -139,22 +142,24 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 		RequestId: args.RequestId,
 		ClientId:  args.ClientId,
 	}
-	kv.mu.Unlock()
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	kv.mu.Lock()
-	_, existClient := kv.chanByRequestIdByClientId[args.ClientId]
-	if !existClient {
-		kv.chanByRequestIdByClientId[args.ClientId] = make(map[int64]chan raft.ApplyMsg) // create a map for clientId if it doesn't exist
+	clientChans, ok := kv.chanByRequestIdByClientId[args.ClientId]
+	if !ok {
+		clientChans = make(map[int64]chan raft.ApplyMsg)
+		kv.chanByRequestIdByClientId[args.ClientId] = clientChans
 	}
-	_, exists := kv.chanByRequestIdByClientId[args.ClientId][args.RequestId]
-	if !exists {
-		kv.chanByRequestIdByClientId[args.ClientId][args.RequestId] = make(chan raft.ApplyMsg, 1) // create a buffered channel to avoid blocking
+
+	c, ok := clientChans[args.RequestId]
+	if !ok {
+		c = make(chan raft.ApplyMsg, 1)
+		clientChans[args.RequestId] = c
 	}
-	c := kv.chanByRequestIdByClientId[args.ClientId][args.RequestId]
+	//clientChans[args.RequestId] = nil // remove the channel after use
 	kv.mu.Unlock()
 	DPrintf("Server %d waiting put for request %v", kv.me, args)
 	<-c
@@ -173,6 +178,7 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 	DPrintf("Server %d received Append request for key %s", kv.me, args)
+	kv.mu.Unlock()
 	op := Op{
 		Key:       args.Key,
 		Value:     args.Value,
@@ -181,22 +187,24 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 		ClientId:  args.ClientId,
 	}
 	// todo talvez pensar uma maneira de otimizar o servidor para não ficar esperando o start
-	kv.mu.Unlock()
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 	kv.mu.Lock()
-	_, existClient := kv.chanByRequestIdByClientId[args.ClientId]
-	if !existClient {
-		kv.chanByRequestIdByClientId[args.ClientId] = make(map[int64]chan raft.ApplyMsg) // create a map for clientId if it doesn't exist
+	clientChans, ok := kv.chanByRequestIdByClientId[args.ClientId]
+	if !ok {
+		clientChans = make(map[int64]chan raft.ApplyMsg)
+		kv.chanByRequestIdByClientId[args.ClientId] = clientChans
 	}
-	_, exists := kv.chanByRequestIdByClientId[args.ClientId][args.RequestId]
-	if !exists {
-		kv.chanByRequestIdByClientId[args.ClientId][args.RequestId] = make(chan raft.ApplyMsg, 1) // create a buffered channel to avoid blocking
+
+	c, ok := clientChans[args.RequestId]
+	if !ok {
+		c = make(chan raft.ApplyMsg, 1)
+		clientChans[args.RequestId] = c
 	}
-	c := kv.chanByRequestIdByClientId[args.ClientId][args.RequestId]
+	//clientChans[args.RequestId] = nil // remove the channel after use
 	DPrintf("Server %d waiting append for request %v", kv.me, args)
 	kv.mu.Unlock()
 	<-c
@@ -265,26 +273,25 @@ func (kv *KVServer) apply() {
 		}
 
 		msg := <-kv.applyCh
-		kv.mu.Lock()
 		DPrintf("Server %d received message %v", kv.me, msg)
 		op := msg.Command.(Op)
 		clientId := op.ClientId
+		kv.mu.Lock()
 		lastRequest := kv.lastRequestForClient[clientId]
 		DPrintf("Server %d processing op %v for client %d, lastRequest %v", kv.me, op, clientId, lastRequest)
-		if op.RequestId > lastRequest.RequestId {
+		if op.RequestId <= lastRequest.RequestId {
+			kv.mu.Unlock()
+			continue
+		} else {
 			if op.OpType == OpTypePut {
 				kv.kvStore[op.Key] = op.Value
 			} else if op.OpType == OpTypeAppend {
 				kv.kvStore[op.Key] += op.Value
 			}
-
 			kv.lastRequestForClient[clientId] = op
 			DPrintf("Server %d lastRequestForClient updated for client %d: %v", kv.me, clientId, op)
-		} else {
-			kv.mu.Unlock()
-			continue
 		}
-		c, exists := kv.chanByRequestIdByClientId[op.RequestId][clientId]
+		c, exists := kv.chanByRequestIdByClientId[op.ClientId][op.RequestId]
 		if exists {
 			c <- msg
 			DPrintf("Server %d sent message to channel for client %d and requestId %d", kv.me, clientId, op.RequestId)

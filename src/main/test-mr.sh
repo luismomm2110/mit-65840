@@ -80,6 +80,7 @@ failed_any=0
 # generate the correct output
 ../mrsequential ../../mrapps/wc.so ../pg*txt || exit 1
 sort mr-out-0 > mr-correct-wc.txt
+cp mr-correct-wc.txt ../mr-correct-wc.txt
 rm -f mr-out*
 
 echo '***' Starting wc test.
