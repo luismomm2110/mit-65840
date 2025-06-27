@@ -4,6 +4,7 @@ import (
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
+	"bytes"
 	"fmt"
 	"log"
 	"sync"
@@ -74,6 +75,7 @@ type KVServer struct {
 	kvStore                   map[string]string
 	chanByRequestIdByClientId map[int64]map[int64]chan raft.ApplyMsg // ephemeral channels for each requestId by clientId
 	lastRequestForClient      map[int64]Op                           // maps clientId to greatest requestId seen so far that we can deduplicate requests
+	lastPersistedIndex        int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -186,7 +188,6 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 		RequestId: args.RequestId,
 		ClientId:  args.ClientId,
 	}
-	// todo talvez pensar uma maneira de otimizar o servidor para não ficar esperando o start
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
@@ -259,6 +260,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.chanByRequestIdByClientId = make(map[int64]map[int64]chan raft.ApplyMsg) // maps requestId to channels by clientId
 	kv.kvStore = make(map[string]string)
 	kv.lastRequestForClient = make(map[int64]Op)
+	data := kv.rf.ReadSnapshot()
+	kv.restoreFromSnapshot(data)
 
 	// You may need initialization code here.
 	go kv.apply()
@@ -273,6 +276,10 @@ func (kv *KVServer) apply() {
 		}
 
 		msg := <-kv.applyCh
+		if !msg.CommandValid {
+			kv.restoreFromSnapshot(msg.Snapshot)
+			continue
+		}
 		DPrintf("Server %d received message %v", kv.me, msg)
 		op := msg.Command.(Op)
 		clientId := op.ClientId
@@ -298,6 +305,52 @@ func (kv *KVServer) apply() {
 		} else {
 			DPrintf("Server %d no channel found for client %d and requestId %d", kv.me, clientId, op.RequestId)
 		}
+		index := msg.CommandIndex
+		kv.snapshot(index)
 		kv.mu.Unlock()
 	}
+}
+
+type Snapshot struct {
+	Values        map[string]string
+	LastSeenIndex int
+}
+
+func (kv *KVServer) snapshot(index int) {
+	DPrintf("Server %d making snapshot", kv.me)
+	size := kv.rf.GetSize()
+	if index <= kv.lastPersistedIndex {
+		return
+	}
+	snapshot := Snapshot{
+		Values:        kv.kvStore,
+		LastSeenIndex: index,
+	}
+
+	kv.lastPersistedIndex = index
+	var buffer bytes.Buffer
+	encoder := labgob.NewEncoder(&buffer)
+	encoder.Encode(snapshot)
+	snapshotSize := len(buffer.Bytes())
+	DPrintf("snapshot size %d", snapshotSize)
+	if size > kv.maxraftstate {
+		kv.rf.Snapshot(kv.lastPersistedIndex, buffer.Bytes())
+	}
+}
+
+func (kv *KVServer) restoreFromSnapshot(data []byte) {
+	if data == nil || len(data) == 0 {
+		return
+	}
+	var buffer bytes.Buffer
+	buffer.Write(data)
+	decoder := labgob.NewDecoder(&buffer)
+	var snapshot Snapshot
+	err := decoder.Decode(&snapshot)
+	if err != nil {
+		log.Fatalf("Server %d restoreFromSnapshot error %v", kv.me, err)
+	}
+	kv.kvStore = snapshot.Values
+	kv.lastPersistedIndex = snapshot.LastSeenIndex
+
 }

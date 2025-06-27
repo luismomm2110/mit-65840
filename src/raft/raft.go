@@ -20,6 +20,7 @@ package raft
 import (
 	"6.5840/labgob"
 	"bytes"
+	"encoding/binary"
 	"encoding/gob"
 	"fmt"
 	"log"
@@ -152,9 +153,8 @@ type RequestInfo struct {
 	CommitedIndex int
 }
 type Snapshot struct {
-	Values                map[string]string
-	CompletedRequestsById map[int]RequestInfo
-	LastSeenIndex         int
+	Values        map[string]string
+	LastSeenIndex int
 }
 
 // save Raft's persistent state to stable storage,
@@ -1142,8 +1142,7 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 	rf.data = i
 	rf.lastIncludedTerm = rf.getLogTerm(index)
 	rf.logs = rf.getLogsEntriesFromStart(index)
-	//DPrintf("server %v snapshot size %v", rf.me, len(rf.persister.ReadRaftState()))
-	//DPrintf("server %v logs after snapshot", rf.me)
+	DPrintf("server %v LOGS SIZE %d bytes", rf.me, rf.GetLogSizeInBytes()) //DPrintf("server %v logs after snapshot", rf.me)
 	//rf.PrintLog()
 	rf.lastIncludedIndex = index
 }
@@ -1158,4 +1157,11 @@ func (rf *Raft) PrintLog() {
 	//	DPrintf("server %v Index: %d, rf.me, Term: %d, Command: %v (printing log)", rf.me, i+rf.lastIncludedIndex, entry.Term, entry.Command)
 	//}
 	//DPrintf("server %v len of logs: %d", rf.me, len(rf.logs))
+}
+func (rf *Raft) GetLogSizeInBytes() int {
+	size := 0
+	for _, entry := range rf.logs {
+		size += binary.Size(entry)
+	}
+	return size
 }
