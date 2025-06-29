@@ -153,8 +153,9 @@ type RequestInfo struct {
 	CommitedIndex int
 }
 type Snapshot struct {
-	Values        map[string]string
-	LastSeenIndex int
+	Values               map[string]string
+	LastSeenIndex        int
+	LastRequestForClient map[int64]int64
 }
 
 // save Raft's persistent state to stable storage,
@@ -186,9 +187,6 @@ func (rf *Raft) persist() {
 	if err := decoderoutro.Decode(&snapshot); err != nil {
 		log.Fatalf("Erro ao decodificar snapshot: %v", err)
 	}
-
-	DPrintf("server %d persisted state with term %d lastIncludedIndex %d", rf.me, rf.currentTerm, rf.lastIncludedIndex)
-	DPrintf("server %d data %d", rf.me, snapshot.LastSeenIndex)
 }
 
 // restore previously persisted state.

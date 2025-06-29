@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	// set flag for miliseconds since epoch
@@ -74,7 +74,7 @@ type KVServer struct {
 	// Your definitions here.
 	kvStore                   map[string]string
 	chanByRequestIdByClientId map[int64]map[int64]chan raft.ApplyMsg // ephemeral channels for each requestId by clientId
-	lastRequestForClient      map[int64]Op                           // maps clientId to greatest requestId seen so far that we can deduplicate requests
+	lastRequestForClient      map[int64]int64                        // maps clientId to greatest requestId seen so far that we can deduplicate requests
 	lastPersistedIndex        int
 }
 
@@ -82,7 +82,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
-	if args.RequestId <= lastRequest.RequestId {
+	if args.RequestId <= lastRequest {
 		DPrintf("Server %d ignoring Get request with old requestId %d for client %d", kv.me, args.RequestId, args.ClientId)
 		reply.Err = OK
 		reply.Value = kv.kvStore[args.Key] // return the value from the kvStore
@@ -121,6 +121,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	reply.Value = kv.kvStore[args.Key]
+	DPrintf("Server %d returning value %v for Get request %v", kv.me, reply.Value, args)
 	reply.Err = OK
 }
 
@@ -128,8 +129,8 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
-	DPrintf("Server %d received Put request for key %s with requestId %d for client %d and last request is %d", kv.me, args.Key, args.RequestId, args.ClientId, lastRequest.RequestId)
-	if args.RequestId <= lastRequest.RequestId {
+	DPrintf("Server %d received Put request for key %s with requestId %d for client %d and last request is %d", kv.me, args.Key, args.RequestId, args.ClientId, lastRequest)
+	if args.RequestId <= lastRequest {
 		DPrintf("Server %d ignoring Put request with old requestId %d for client %d", kv.me, args.RequestId, args.ClientId)
 		reply.Err = OK
 		kv.mu.Unlock()
@@ -173,7 +174,7 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
-	if args.RequestId <= lastRequest.RequestId {
+	if args.RequestId <= lastRequest {
 		DPrintf("Server %d ignoring Append request with old requestId %d for client %d", kv.me, args.RequestId, args.ClientId)
 		reply.Err = OK
 		kv.mu.Unlock()
@@ -259,7 +260,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.chanByRequestIdByClientId = make(map[int64]map[int64]chan raft.ApplyMsg) // maps requestId to channels by clientId
 	kv.kvStore = make(map[string]string)
-	kv.lastRequestForClient = make(map[int64]Op)
+	kv.lastRequestForClient = make(map[int64]int64)
 	data := kv.rf.ReadSnapshot()
 	kv.restoreFromSnapshot(data)
 
@@ -286,7 +287,7 @@ func (kv *KVServer) apply() {
 		kv.mu.Lock()
 		lastRequest := kv.lastRequestForClient[clientId]
 		DPrintf("Server %d processing op %v for client %d, lastRequest %v", kv.me, op, clientId, lastRequest)
-		if op.RequestId <= lastRequest.RequestId {
+		if op.RequestId <= lastRequest {
 			kv.mu.Unlock()
 			continue
 		} else {
@@ -295,7 +296,7 @@ func (kv *KVServer) apply() {
 			} else if op.OpType == OpTypeAppend {
 				kv.kvStore[op.Key] += op.Value
 			}
-			kv.lastRequestForClient[clientId] = op
+			kv.lastRequestForClient[clientId] = op.RequestId
 			DPrintf("Server %d lastRequestForClient updated for client %d: %v", kv.me, clientId, op)
 		}
 		c, exists := kv.chanByRequestIdByClientId[op.ClientId][op.RequestId]
@@ -312,19 +313,24 @@ func (kv *KVServer) apply() {
 }
 
 type Snapshot struct {
-	Values        map[string]string
-	LastSeenIndex int
+	Values               map[string]string
+	LastSeenIndex        int
+	LastRequestForClient map[int64]int64
 }
 
 func (kv *KVServer) snapshot(index int) {
 	DPrintf("Server %d making snapshot", kv.me)
+	if kv.maxraftstate == -1 {
+		return
+	}
 	size := kv.rf.GetSize()
 	if index <= kv.lastPersistedIndex {
 		return
 	}
 	snapshot := Snapshot{
-		Values:        kv.kvStore,
-		LastSeenIndex: index,
+		Values:               kv.kvStore,
+		LastSeenIndex:        index,
+		LastRequestForClient: kv.lastRequestForClient,
 	}
 
 	kv.lastPersistedIndex = index
@@ -352,5 +358,8 @@ func (kv *KVServer) restoreFromSnapshot(data []byte) {
 	}
 	kv.kvStore = snapshot.Values
 	kv.lastPersistedIndex = snapshot.LastSeenIndex
-
+	DPrintf("Server %d restoreFromSnapshot with last request for client %v", kv.me, snapshot.LastRequestForClient)
+	DPrintf("Server %d restoreFromSnapshot with values %v", kv.me, snapshot.Values)
+	DPrintf("Server %d restoreFromSnapshot with last persisted index %v ", kv.me, snapshot.LastSeenIndex)
+	kv.lastRequestForClient = snapshot.LastRequestForClient
 }

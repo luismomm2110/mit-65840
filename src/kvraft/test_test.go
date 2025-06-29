@@ -358,7 +358,7 @@ func GenericTest(t *testing.T, part string, nclients int, nservers int, unreliab
 			// requests and had time to checkpoint.
 			sz := cfg.LogSize()
 			if sz > 8*maxraftstate {
-				t.Fatalf("logs were not trimmed (%v > 8*%v)", sz, maxraftstate)
+				t.Fatalf("LOGS WERE NOT TRIMMED (%v > 8*%v)", sz, maxraftstate)
 			}
 		}
 		if maxraftstate < 0 {
