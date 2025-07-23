@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	// set flag for miliseconds since epoch
@@ -83,9 +83,9 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
 	if args.RequestId <= lastRequest {
-		DPrintf("Server %d ignoring Get request with old requestId %d for client %d", kv.me, args.RequestId, args.ClientId)
 		reply.Err = OK
 		reply.Value = kv.kvStore[args.Key] // return the value from the kvStore
+		DPrintf("Server %d returning value %v for Get request alreadt completed %v", kv.me, reply.Value, args)
 		kv.mu.Unlock()
 		return
 	}
@@ -166,7 +166,7 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Unlock()
 	DPrintf("Server %d waiting put for request %v", kv.me, args)
 	<-c
-	DPrintf("Server %d received  put request %v from channel %v", kv.me, args, c)
+	DPrintf("Server %d received put request %v from channel %v", kv.me, args, c)
 	reply.Err = OK
 }
 
@@ -175,7 +175,7 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
 	if args.RequestId <= lastRequest {
-		DPrintf("Server %d ignoring Append request with old requestId %d for client %d", kv.me, args.RequestId, args.ClientId)
+		DPrintf("Server %d ignoring Append request with old requestId %d for client %d\n key is %v", kv.me, args.RequestId, args.ClientId, kv.kvStore[args.Key])
 		reply.Err = OK
 		kv.mu.Unlock()
 		return
@@ -206,11 +206,9 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 		c = make(chan raft.ApplyMsg, 1)
 		clientChans[args.RequestId] = c
 	}
-	//clientChans[args.RequestId] = nil // remove the channel after use
-	DPrintf("Server %d waiting append for request %v", kv.me, args)
+	DPrintf("Server %d Append request with old requestId %d for client %d\n key is %v", kv.me, args.RequestId, args.ClientId, kv.kvStore[args.Key])
 	kv.mu.Unlock()
 	<-c
-	DPrintf("Server %d received request %v from channel %v", kv.me, args, c)
 	reply.Err = OK
 }
 
@@ -278,16 +276,20 @@ func (kv *KVServer) apply() {
 
 		msg := <-kv.applyCh
 		if !msg.CommandValid {
+			kv.mu.Lock()
+			DPrintf("Server %d received snapshot %v", kv.me, msg.Command)
 			kv.restoreFromSnapshot(msg.Snapshot)
+			kv.mu.Unlock()
 			continue
 		}
+		kv.mu.Lock()
 		DPrintf("Server %d received message %v", kv.me, msg)
 		op := msg.Command.(Op)
 		clientId := op.ClientId
-		kv.mu.Lock()
 		lastRequest := kv.lastRequestForClient[clientId]
 		DPrintf("Server %d processing op %v for client %d, lastRequest %v", kv.me, op, clientId, lastRequest)
 		if op.RequestId <= lastRequest {
+			DPrintf("Server %d ignoring old requestId %d for client %d", kv.me, op.RequestId, clientId)
 			kv.mu.Unlock()
 			continue
 		} else {
@@ -295,6 +297,7 @@ func (kv *KVServer) apply() {
 				kv.kvStore[op.Key] = op.Value
 			} else if op.OpType == OpTypeAppend {
 				kv.kvStore[op.Key] += op.Value
+				DPrintf("Server %d value for key %v updated to %v", kv.me, op.Key, kv.kvStore[op.Key])
 			}
 			kv.lastRequestForClient[clientId] = op.RequestId
 			DPrintf("Server %d lastRequestForClient updated for client %d: %v", kv.me, clientId, op)
@@ -314,22 +317,20 @@ func (kv *KVServer) apply() {
 
 type Snapshot struct {
 	Values               map[string]string
-	LastSeenIndex        int
 	LastRequestForClient map[int64]int64
 }
 
 func (kv *KVServer) snapshot(index int) {
-	DPrintf("Server %d making snapshot", kv.me)
 	if kv.maxraftstate == -1 {
 		return
 	}
 	size := kv.rf.GetSize()
+	DPrintf("Server %d received snapshot index %v  current index %v", kv.me, index, kv.lastPersistedIndex)
 	if index <= kv.lastPersistedIndex {
 		return
 	}
 	snapshot := Snapshot{
 		Values:               kv.kvStore,
-		LastSeenIndex:        index,
 		LastRequestForClient: kv.lastRequestForClient,
 	}
 
@@ -337,9 +338,8 @@ func (kv *KVServer) snapshot(index int) {
 	var buffer bytes.Buffer
 	encoder := labgob.NewEncoder(&buffer)
 	encoder.Encode(snapshot)
-	snapshotSize := len(buffer.Bytes())
-	DPrintf("snapshot size %d", snapshotSize)
 	if size > kv.maxraftstate {
+		DPrintf("Server %d making snapshot with last persisted index %d and kvValue is %v", kv.me, kv.lastPersistedIndex, kv.kvStore)
 		kv.rf.Snapshot(kv.lastPersistedIndex, buffer.Bytes())
 	}
 }
@@ -357,9 +357,7 @@ func (kv *KVServer) restoreFromSnapshot(data []byte) {
 		log.Fatalf("Server %d restoreFromSnapshot error %v", kv.me, err)
 	}
 	kv.kvStore = snapshot.Values
-	kv.lastPersistedIndex = snapshot.LastSeenIndex
 	DPrintf("Server %d restoreFromSnapshot with last request for client %v", kv.me, snapshot.LastRequestForClient)
 	DPrintf("Server %d restoreFromSnapshot with values %v", kv.me, snapshot.Values)
-	DPrintf("Server %d restoreFromSnapshot with last persisted index %v ", kv.me, snapshot.LastSeenIndex)
 	kv.lastRequestForClient = snapshot.LastRequestForClient
 }

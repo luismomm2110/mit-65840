@@ -154,7 +154,6 @@ type RequestInfo struct {
 }
 type Snapshot struct {
 	Values               map[string]string
-	LastSeenIndex        int
 	LastRequestForClient map[int64]int64
 }
 
@@ -212,6 +211,7 @@ func (rf *Raft) readPersist(data []byte) {
 	rf.commitIndex = rf.lastIncludedIndex
 	rf.lastApplied = rf.lastIncludedIndex
 	DPrintf("Server %d restored state with term %d lastIncludedIndex %d", rf.me, rf.currentTerm, rf.lastIncludedIndex)
+	rf.PrintLog()
 }
 
 // RequestVote RPC arguments structure.
@@ -371,7 +371,6 @@ func (rf *Raft) applyLogs() {
 				//DPrintf("server %d waiting for new logs to apply", rf.me)
 				rf.applyCond.Wait()
 			}
-			//DPrintf("server %d applying logs from %d to %d", rf.me, rf.lastApplied+1, rf.commitIndex)
 			// Apply all new logs.
 			start := rf.lastApplied + 1
 			end := rf.commitIndex
@@ -385,13 +384,13 @@ func (rf *Raft) applyLogs() {
 				})
 				rf.lastApplied = i
 			}
-			//DPrintf("server %d commit index %d", rf.me, rf.commitIndex)
-			//DPrintf("server %d last applied %d", rf.me, rf.lastApplied)
+			DPrintf("server %d commit index %d", rf.me, rf.commitIndex)
+			DPrintf("server %d last applied %d", rf.me, rf.lastApplied)
 			rf.mu.Unlock()
 
 			// Send the messages outside the lock.
 			for _, msg := range msgs {
-				//DPrintf("server %d sending apply msg %v", rf.me, msg)
+				DPrintf("server %d sending apply msg %v", rf.me, msg)
 				rf.applyCh <- msg
 			}
 		}
@@ -507,6 +506,20 @@ func (rf *Raft) broadcastRequestVote() {
 	}
 }
 
+func decodeSnapshot(data []byte) (*Snapshot, error) {
+	var snap Snapshot
+	if len(data) == 0 {
+		return &snap, nil // Return an empty snapshot if no data is provided
+
+	}
+	dec := gob.NewDecoder(bytes.NewReader(data))
+	err := dec.Decode(&snap)
+	if err != nil {
+		return nil, err
+	}
+	return &snap, nil
+}
+
 // InstallSnapshot RPC handler.
 // deve mandar applych to the service in an ApplyMsg
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
@@ -518,7 +531,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	defer rf.persist()
 
 	if args.Term < rf.currentTerm {
-		//DPrintf("server %v received install snapshot with term %d less than current term %d", rf.me, args.Term, rf.currentTerm)
+		DPrintf("server %v received install snapshot with term %d less than current term %d", rf.me, args.Term, rf.currentTerm)
 		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
@@ -531,12 +544,14 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	reply.Success = true
 	reply.Term = args.Term
 
+	//2025/07/17 08:15:44 server 1 received install snapshot with args InstallSnapshotArgs{Term: 8, LeaderId: 0, LastIncludedIndex: 66, LastIncludedTerm: 8, Data: [60 255 147 3 1 1 8 83 110 97 112 115 104 111 116 1 255 148 0 1 2 1 6 86 97 108 117 101 115 1 255 150 0 1 20 76 97 115 116 82 101 113 117 101 115 116 70 111 114 67 108 105 101 110 116 1 255 152 0 0 0 33 255 149 4 1 1 17 109 97 112 91 115 116 114 105 110 103 93 115 116 114 105 110 103 1 255 150 0 1 12 1 12 0 0 31 255 151 4 1 1 15 109 97 112 91 105 110 116 54 52 93 105 110 116 54 52 1 255 152 0 1 4 1 4 0 0 254 1 81 255 148 1 55 2 52 55 2 52 55 1 99 1 67 1 100 1 68 1 101 1 69 1 51 1 51 1 53 1 53 1 57 1 57 2 49 52 2 49 52 2 49 57 2 49 57 2 50 48 2 50 48 2 50 49 2 50 49 2 51 55 2 51 55 2 49 49 2 49 49 2 51 54 2 51 54 2 52 50 2 52 50 2 52 51 2 52 51 2 52 52 2 52 52 2 49 48 2 49 48 2 49 56 2 49 56 2 50 53 2 50 53 2 50 54 2 50 54 2 51 51 2 51 51 2 51 53 2 51 53 2 51 56 2 51 56 2 52 56 2 52 56 2 50 56 2 50 56 2 52 49 2 52 49 1 48 1 48 1 50 1 50 1 52 1 52 1 54 1 54 1 56 1 56 2 49 50 2 49 50 2 49 51 2 49 51 2 50 50 2 50 50 1 49 1 49 2 50 52 2 50 52 2 50 57 2 50 57 2 51 48 2 51 48 2 51 50 2 51 50 2 51 52 2 51 52 2 52 48 2 52 48 2 52 53 2 52 53 2 49 55 2 49 55 2 50 51 2 50 51 2 50 55 2 50 55 2 51 49 2 51 49 2 51 57 2 51 57 2 52 54 2 52 54 2 52 57 2 52 57 1 98 1 66 1 97 1 65 1 55 1 55 2 49 53 2 49 53 2 49 54 2 49 54 1 3 248 23 124 35 85 133 38 232 132 6 248 102 98 159 233 239 230 9 80 102 248 127 21 128 183 88 136 143 68 12 0]} term 8 and current lastIncludedIndex 46
 	//If existing log entry has same index and term as snapshot’s last included entry, retain log entries following it and reply
-	if rf.getLogLength() >= args.LastIncludedIndex && rf.getLogTerm(args.LastIncludedIndex) == args.LastIncludedTerm {
+	if rf.LogExists(args.LastIncludedIndex) && rf.getLogTerm(args.LastIncludedIndex) == args.LastIncludedTerm {
 		rf.logs = rf.getLogEntriesFromStart(args.LastIncludedIndex + 1)
-		//DPrintf("server %v logs after install snapshot %v retaining logs", rf.me, rf.logs)
+		DPrintf("server %v logs after install snapshot %v retaining logs", rf.me, rf.logs)
 		rf.lastIncludedIndex = args.LastIncludedIndex
 		rf.lastIncludedTerm = args.LastIncludedTerm
+		rf.data = args.Data
 		if rf.commitIndex < args.LastIncludedIndex {
 			rf.commitIndex = args.LastIncludedIndex
 		}
@@ -559,11 +574,25 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	rf.logs = []LogEntry{}
 	rf.lastIncludedIndex = args.LastIncludedIndex
 	rf.lastIncludedTerm = args.LastIncludedTerm
-	//DPrintf("server %v logs after install snapshot %v discarding logs", rf.me, rf.logs)
+	DPrintf("server %v logs after install snapshot %v discarding logs", rf.me, rf.logs)
 	rf.commitIndex = args.LastIncludedIndex
 	rf.lastApplied = args.LastIncludedIndex
-	//When a follower's Raft code receives an InstallSnapshot RPC, it can use the applyCh to send the snapshot to the service in an ApplyMsg.
 	rf.data = args.Data
+	//When a follower's Raft code receives an InstallSnapshot RPC, it can use the applyCh to send the snapshot to the service in an ApplyMsg.
+
+	snap, err := decodeSnapshot(rf.data)
+	if err != nil {
+		log.Fatalf("server %d: error decoding snapshot: %v", rf.me, err)
+	} else {
+		DPrintf("server %d: Snapshot decodificado: %+v", rf.me, snap)
+	}
+
+	argsSnapshot, err := decodeSnapshot(args.Data)
+	if err != nil {
+		log.Fatalf("server %d: error decoding snapshot args: %v", rf.me, err)
+	} else {
+		DPrintf("server %d: Snapshot args decodificado: %+v", rf.me, argsSnapshot)
+	}
 
 	// apply the snapshot message
 	DPrintf("server %d sending snapshot to state machine", rf.me)
@@ -796,10 +825,13 @@ func (rf *Raft) sendInstallSnapshot(peer int) {
 		LastIncludedTerm:  rf.lastIncludedTerm,
 		Data:              rf.data,
 	}
-	DPrintf("server %v sending install snapshot to server %v args %v", rf.me, peer, args)
 	reply := InstallSnapshotReply{}
 	rf.mu.Unlock()
-	DPrintf("server %v sending install snapshot to server %v with args %v", rf.me, peer, args)
+	decodedData, err := decodeSnapshot(args.Data)
+	if err != nil {
+		log.Fatalf("server %d: error decoding snapshot data: %v", rf.me, err)
+	}
+	DPrintf("server %v sending install snapshot to server %v with args %v and data %v", rf.me, peer, args, decodedData)
 	valid := rf.peers[peer].Call("Raft.InstallSnapshot", &args, &reply)
 	//DPrintf("server %v received install snapshot reply from server %v with reply %v and it valid %v", rf.me, peer, reply, valid)
 	if !valid {
@@ -810,10 +842,10 @@ func (rf *Raft) sendInstallSnapshot(peer int) {
 		rf.mu.Unlock()
 	}()
 	if reply.Term > rf.currentTerm {
+		// todo aqui pode ser que tenha que ver após o return se é líderr ainda
 		//DPrintf("server %v received install snapshot reply from server %v with term %d greater than current term %d", rf.me, peer, reply.Term, rf.currentTerm)
 		rf.stepDownToFollower(reply.Term)
 		return
-		// todo aqui pode ser que tenha que ver após o return se é líderr ainda
 	}
 	rf.nextIndex[peer] = rf.lastIncludedIndex + 1
 	time.Sleep(50 * time.Millisecond)
@@ -1012,7 +1044,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 // need to be called with lock held
 func (rf *Raft) LogExists(index int) bool {
 	if rf.lastIncludedIndex != 0 {
-		return index >= rf.lastIncludedIndex
+		return index > rf.lastIncludedIndex && index < len(rf.logs)+rf.lastIncludedIndex
 	}
 	return index >= 1 && index < len(rf.logs)-1
 }
@@ -1146,15 +1178,14 @@ func (rf *Raft) Snapshot(index int, i []byte) {
 }
 
 func (rf *Raft) PrintLog() {
-	//DPrintf("server %v printing logs", rf.me)
-	return
-	//for i, entry := range rf.logs {
-	//	if rf.lastIncludedIndex != 0 {
-	//		i++
-	//	}
-	//	DPrintf("server %v Index: %d, rf.me, Term: %d, Command: %v (printing log)", rf.me, i+rf.lastIncludedIndex, entry.Term, entry.Command)
-	//}
-	//DPrintf("server %v len of logs: %d", rf.me, len(rf.logs))
+	DPrintf("server %v printing logs", rf.me)
+	for i, entry := range rf.logs {
+		if rf.lastIncludedIndex != 0 {
+			i++
+		}
+		DPrintf("server %v Index: %d, rf.me, Term: %d, Command: %v (printing log)", rf.me, i+rf.lastIncludedIndex, entry.Term, entry.Command)
+	}
+	DPrintf("server %v len of logs: %d", rf.me, len(rf.logs))
 }
 func (rf *Raft) GetLogSizeInBytes() int {
 	size := 0
