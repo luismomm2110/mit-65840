@@ -16,8 +16,9 @@ type ShardCtrler struct {
 
 	// Your data here.
 
-	configs []Config // indexed by config num
-	gids    map[int]struct{}
+	configs              []Config // indexed by config num
+	gids                 map[int]struct{}
+	lastCompletedRequest int64 // last completed index
 }
 
 type Op struct {
@@ -28,6 +29,13 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+
+	if args.LastRequest <= sc.lastCompletedRequest {
+		reply.WrongLeader = false
+		reply.Err = OK
+		DPrintf("[%d] received join command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastCompletedRequest)
+		return
+	}
 
 	receivedServers := args.Servers
 	DPrintf("[%d] received join command with receivedServers %v", sc.me, receivedServers)
@@ -43,6 +51,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 		msg := fmt.Sprintf("newGid %d already exists", newGid)
 		panic(msg)
 	}
+
 	sc.gids[newGid] = struct{}{}
 	shardByGroup := NShards/(len(lastConfig.Groups)) - 1
 	var newShards [NShards]int
@@ -63,12 +72,20 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 		Groups: groups,
 	}
 	sc.configs = append(sc.configs, config)
+	sc.lastCompletedRequest = args.LastRequest
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+
+	if args.LastRequest <= sc.lastCompletedRequest {
+		reply.WrongLeader = false
+		reply.Err = OK
+		DPrintf("[%d] received leave command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastCompletedRequest)
+		return
+	}
 
 	receivedGids := args.GIDs
 	DPrintf("[%d] received leave command with receivedServers %v", sc.me, receivedGids)
@@ -80,6 +97,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 		DPrintf("[%d] received gid %d from gids %v", sc.me, v, groups)
 		delete(groups, v)
 	}
+	sc.lastCompletedRequest = args.LastRequest
 	sc.gids[newGid] = struct{}{}
 	if len(groups) > 0 {
 		DPrintf("[%d]  groups after leave %v with len %v", sc.me, groups, len(groups))
@@ -123,6 +141,14 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+
+	if args.LastRequest <= sc.lastCompletedRequest {
+		reply.WrongLeader = false
+		reply.Err = OK
+		DPrintf("[%d] received query command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastCompletedRequest)
+		return
+	}
+
 	index := args.Num
 	if index == -1 || len(sc.configs) <= index {
 		config := sc.configs[len(sc.configs)-1]
@@ -133,10 +159,12 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	}
 
 	config := sc.configs[index]
+	sc.lastCompletedRequest = args.LastRequest
 	reply.WrongLeader = false
 	reply.Config = config
 	reply.Err = OK
 	reply.Config = config
+
 	return
 }
 

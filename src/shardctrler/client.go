@@ -12,6 +12,7 @@ import "math/big"
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
+	lastRequest int64
 }
 
 func nrand() int64 {
@@ -24,12 +25,14 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.lastRequest = 0
 	// Your code here.
 	return ck
 }
 
 func (ck *Clerk) Query(num int) Config {
 	args := &QueryArgs{}
+	args.LastRequest = ck.lastRequest + 1
 	// Your code here.
 	args.Num = num
 	for {
@@ -38,6 +41,7 @@ func (ck *Clerk) Query(num int) Config {
 			var reply QueryReply
 			ok := srv.Call("ShardCtrler.Query", args, &reply)
 			if ok && reply.WrongLeader == false {
+				ck.lastRequest++
 				return reply.Config
 			}
 		}
@@ -49,6 +53,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args := &JoinArgs{}
 	// Your code here.
 	args.Servers = servers
+	args.LastRequest = ck.lastRequest + 1
 
 	for {
 		// try each known server.
@@ -56,6 +61,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 			var reply JoinReply
 			ok := srv.Call("ShardCtrler.Join", args, &reply)
 			if ok && reply.WrongLeader == false {
+				ck.lastRequest++
 				return
 			}
 		}
@@ -67,6 +73,7 @@ func (ck *Clerk) Leave(gids []int) {
 	args := &LeaveArgs{}
 	// Your code here.
 	args.GIDs = gids
+	args.LastRequest = ck.lastRequest + 1
 
 	for {
 		// try each known server.
@@ -74,6 +81,7 @@ func (ck *Clerk) Leave(gids []int) {
 			var reply LeaveReply
 			ok := srv.Call("ShardCtrler.Leave", args, &reply)
 			if ok && reply.WrongLeader == false {
+				ck.lastRequest++
 				return
 			}
 		}
@@ -86,6 +94,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 	// Your code here.
 	args.Shard = shard
 	args.GID = gid
+	args.LastRequest = ck.lastRequest + 1
 
 	for {
 		// try each known server.
@@ -93,6 +102,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 			var reply MoveReply
 			ok := srv.Call("ShardCtrler.Move", args, &reply)
 			if ok && reply.WrongLeader == false {
+				ck.lastRequest++
 				return
 			}
 		}
