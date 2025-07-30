@@ -18,11 +18,26 @@ type ShardCtrler struct {
 
 	configs              []Config // indexed by config num
 	gids                 map[int]struct{}
-	lastCompletedRequest int64 // last completed index
+	lastRequestForClient map[int64]int64 // maps clientId to greatest requestId seen so far that we can deduplicate requests
+	// todo maybe?
+	lastPersistedIndex int
 }
+
+// enum for op type arg
+// OpType is the type of operation
+type OpType int
+
+// Operation types
+const (
+	JoinOp OpType = iota
+	LeaveOp
+	MoveOp
+	QueryOp
+)
 
 type Op struct {
 	// Your data here.
+
 }
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
@@ -30,10 +45,10 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	if args.LastRequest <= sc.lastCompletedRequest {
+	if args.LastRequest <= sc.lastRequestForClient[args.ClientId] {
 		reply.WrongLeader = false
 		reply.Err = OK
-		DPrintf("[%d] received join command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastCompletedRequest)
+		DPrintf("[%d] received join command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastRequestForClient[args.ClientId])
 		return
 	}
 
@@ -72,7 +87,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 		Groups: groups,
 	}
 	sc.configs = append(sc.configs, config)
-	sc.lastCompletedRequest = args.LastRequest
+	sc.lastRequestForClient[args.ClientId] = args.LastRequest
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -80,10 +95,10 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	if args.LastRequest <= sc.lastCompletedRequest {
+	if args.LastRequest <= sc.lastRequestForClient[args.ClientId] {
 		reply.WrongLeader = false
 		reply.Err = OK
-		DPrintf("[%d] received leave command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastCompletedRequest)
+		DPrintf("[%d] received leave command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastRequestForClient[args.ClientId])
 		return
 	}
 
@@ -97,7 +112,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 		DPrintf("[%d] received gid %d from gids %v", sc.me, v, groups)
 		delete(groups, v)
 	}
-	sc.lastCompletedRequest = args.LastRequest
+	sc.lastRequestForClient[args.ClientId] = args.LastRequest
 	sc.gids[newGid] = struct{}{}
 	if len(groups) > 0 {
 		DPrintf("[%d]  groups after leave %v with len %v", sc.me, groups, len(groups))
@@ -142,10 +157,12 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	if args.LastRequest <= sc.lastCompletedRequest {
+	DPrintf("[%d]  Query command with last request %v", sc.me, args.LastRequest)
+
+	if args.LastRequest <= sc.lastRequestForClient[args.ClientId] {
 		reply.WrongLeader = false
 		reply.Err = OK
-		DPrintf("[%d] received query command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastCompletedRequest)
+		DPrintf("[%d] received query command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastRequestForClient[args.ClientId])
 		return
 	}
 
@@ -159,7 +176,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	}
 
 	config := sc.configs[index]
-	sc.lastCompletedRequest = args.LastRequest
+	sc.lastRequestForClient[args.ClientId] = args.LastRequest
 	reply.WrongLeader = false
 	reply.Config = config
 	reply.Err = OK

@@ -39,6 +39,7 @@ type Err string
 type JoinArgs struct {
 	Servers     map[int][]string // new GID -> servers mappings
 	LastRequest int64            // for deduplication
+	ClientId    int64
 }
 
 type JoinReply struct {
@@ -49,6 +50,7 @@ type JoinReply struct {
 type LeaveArgs struct {
 	GIDs        []int
 	LastRequest int64 // for deduplication
+	ClientId    int64
 }
 
 type LeaveReply struct {
@@ -60,6 +62,7 @@ type MoveArgs struct {
 	Shard       int
 	GID         int
 	LastRequest int64 // for deduplication
+	ClientId    int64
 }
 
 type MoveReply struct {
@@ -70,6 +73,7 @@ type MoveReply struct {
 type QueryArgs struct {
 	Num         int   // desired config number
 	LastRequest int64 // for deduplication
+	ClientId    int64
 }
 
 type QueryReply struct {
