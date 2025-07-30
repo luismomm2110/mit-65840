@@ -37,7 +37,17 @@ const (
 
 type Op struct {
 	// Your data here.
+	// common fields for all operations
+	Type      OpType
+	RequestId int64
+	ClientId  int64
 
+	// specific fields for each operation
+	Servers map[int][]string // for Join
+	GIDs    []int            // for Leave
+	Shard   int              // for Move
+	GID     int              // for Move
+	Num     int              // for Query
 }
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
