@@ -1,6 +1,9 @@
 package shardctrler
 
-import "6.5840/raft"
+import (
+	"6.5840/raft"
+	"fmt"
+)
 import "6.5840/labrpc"
 import "sync"
 import "6.5840/labgob"
@@ -14,6 +17,7 @@ type ShardCtrler struct {
 	// Your data here.
 
 	configs []Config // indexed by config num
+	gids    map[int]struct{}
 }
 
 type Op struct {
@@ -22,10 +26,93 @@ type Op struct {
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	receivedServers := args.Servers
+	DPrintf("[%d] received join command with receivedServers %v", sc.me, receivedServers)
+	numConfig := len(sc.configs)
+	lastConfig := sc.configs[numConfig-1]
+	groups := lastConfig.Groups
+	var newGid int
+	for k, v := range receivedServers {
+		groups[k] = v
+		newGid = k
+	}
+	if _, ok := sc.gids[newGid]; ok {
+		msg := fmt.Sprintf("newGid %d already exists", newGid)
+		panic(msg)
+	}
+	sc.gids[newGid] = struct{}{}
+	shardByGroup := NShards/(len(lastConfig.Groups)) - 1
+	var newShards [NShards]int
+	indexKeys := make([]int, 0, len(groups))
+	for k := range groups {
+		indexKeys = append(indexKeys, k)
+	}
+	index := 0
+	for i := range newShards {
+		newShards[i] = indexKeys[index]
+		if i == shardByGroup {
+			index++
+		}
+	}
+	config := Config{
+		Num:    numConfig,
+		Shards: newShards,
+		Groups: groups,
+	}
+	sc.configs = append(sc.configs, config)
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	receivedGids := args.GIDs
+	DPrintf("[%d] received leave command with receivedServers %v", sc.me, receivedGids)
+	numConfig := len(sc.configs)
+	lastConfig := sc.configs[numConfig-1]
+	groups := lastConfig.Groups
+	var newGid int
+	for _, v := range receivedGids {
+		DPrintf("[%d] received gid %d from gids %v", sc.me, v, groups)
+		delete(groups, v)
+	}
+	sc.gids[newGid] = struct{}{}
+	if len(groups) > 0 {
+		DPrintf("[%d]  groups after leave %v with len %v", sc.me, groups, len(groups))
+		shardByGroup := NShards/(len(groups)) - 1
+		var newShards [NShards]int
+		indexKeys := make([]int, 0, len(groups))
+		for k := range groups {
+			indexKeys = append(indexKeys, k)
+		}
+		index := 0
+		for i := range newShards {
+			newShards[i] = indexKeys[index]
+			if i == shardByGroup {
+				index++
+			}
+		}
+		DPrintf("[%d] newShards after leave %v with len %v", sc.me, newShards, len(newShards))
+		config := Config{
+			Num:    numConfig,
+			Shards: newShards,
+			Groups: groups,
+		}
+		sc.configs = append(sc.configs, config)
+		return
+	}
+	var newShards [NShards]int
+	newShards = [10]int{}
+	config := Config{
+		Num:    numConfig,
+		Shards: newShards,
+		Groups: map[int][]string{},
+	}
+	sc.configs = append(sc.configs, config)
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
@@ -34,6 +121,23 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	index := args.Num
+	if index == -1 || len(sc.configs) <= index {
+		config := sc.configs[len(sc.configs)-1]
+		reply.WrongLeader = false
+		reply.Err = OK
+		reply.Config = config
+		return
+	}
+
+	config := sc.configs[index]
+	reply.WrongLeader = false
+	reply.Config = config
+	reply.Err = OK
+	reply.Config = config
+	return
 }
 
 // the tester calls Kill() when a ShardCtrler instance won't
@@ -60,6 +164,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	sc.configs = make([]Config, 1)
 	sc.configs[0].Groups = map[int][]string{}
+	sc.gids = map[int]struct{}{}
+	DPrintf("[%v] starting server", sc.me)
 
 	labgob.Register(Op{})
 	sc.applyCh = make(chan raft.ApplyMsg)

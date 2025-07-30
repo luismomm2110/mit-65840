@@ -1,5 +1,7 @@
 package shardctrler
 
+import "log"
+
 //
 // Shard controller: assigns shards to replication groups.
 //
@@ -70,4 +72,16 @@ type QueryReply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
+}
+
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	// set flag for miliseconds since epoch
+
+	if Debug {
+		log.Printf(format, a...)
+		log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	}
+	return
 }
