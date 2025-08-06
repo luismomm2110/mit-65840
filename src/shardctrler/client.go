@@ -14,6 +14,7 @@ type Clerk struct {
 	// Your data here.
 	lastRequest int64
 	me          int64 // unique client identifier
+	leader      int   // current leader index, used for retrying
 }
 
 func nrand() int64 {
@@ -38,38 +39,89 @@ func (ck *Clerk) Query(num int) Config {
 	// Your code here.
 	args.Num = num
 	args.ClientId = ck.me
+	leader := ck.leader
+	servers := len(ck.servers)
+	DPrintf("[%d] Query called with args %v", ck.me, args)
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
-			var reply QueryReply
-			ok := srv.Call("ShardCtrler.Query", args, &reply)
-			if ok && reply.WrongLeader == false {
-				ck.lastRequest++
-				return reply.Config
+		for offset := 0; offset < servers; offset++ {
+			server := (leader + offset) % servers
+			reply := QueryReply{}
+			ok := make(chan bool)
+			DPrintf("[%d] Query called with args %v, reply %v", ck.me, args, reply)
+			go func() {
+				ok <- ck.servers[server].Call("ShardCtrler.Query", args, &reply)
+			}()
+			select {
+			case <-ok:
+				{
+					DPrintf("[%d] Query reply %v from server %d", ck.me, reply, server)
+					if reply.Err == OK {
+						ck.leader = server                // update leader to the server that successfully processed the request
+						ck.lastRequest = args.LastRequest // update last request
+						DPrintf("[%d] Query succeeded with args %v, reply %v", ck.me, args, reply)
+						return reply.Config
+					}
+					if reply.Err == WrongLeader {
+						DPrintf("[%d] Query failed with wrong leader, retrying", ck.me)
+						continue // try next server
+					} else {
+						DPrintf("[%d] Query failed with error %v, retrying", ck.me, reply.Err)
+						continue // try next server
+					}
+				}
+			case <-time.After(100 * time.Millisecond):
+				{
+					DPrintf("[%d] Query timed out for args %v, retrying", ck.me, args)
+					// If we timeout, we can try the next server.
+					continue // try next server
+				}
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
 func (ck *Clerk) Join(servers map[int][]string) {
+	// todo retry
 	args := &JoinArgs{}
 	// Your code here.
 	args.Servers = servers
 	args.LastRequest = ck.lastRequest + 1
 	args.ClientId = ck.me
+	numServers := len(ck.servers)
+	start := ck.leader
 
 	for {
-		// try each known server.
-		for _, srv := range ck.servers {
+		for offset := 0; offset < numServers; offset++ {
+			server := (start + offset) % numServers
 			var reply JoinReply
-			ok := srv.Call("ShardCtrler.Join", args, &reply)
-			if ok && reply.WrongLeader == false {
-				ck.lastRequest++
-				return
+			ok := make(chan bool)
+			// try each known server.
+			DPrintf("[%d] Join called with args %v, reply %v", ck.me, args, reply)
+			go func() {
+				ok <- ck.servers[server].Call("ShardCtrler.Join", args, &reply)
+			}()
+			select {
+			case <-ok:
+				DPrintf("Shard controller: [%d] Join reply %v from server %d", ck.me, reply, server)
+				if reply.Err == OK {
+					ck.leader = server // update leader to the server that successfully processed the request
+					DPrintf("Shard controller: [%d] Join succeeded with args %v, reply %v", ck.me, args, reply)
+					ck.lastRequest = args.LastRequest // update last request
+					return
+				} else if reply.Err == WrongLeader {
+					DPrintf("[%d] Join failed with wrong leader, retrying", ck.me)
+				} else {
+					DPrintf("[%d] Join failed with error %v, retrying", ck.me, reply.Err)
+				}
+			case <-time.After(20 * time.Millisecond):
+				{
+					DPrintf("[%d] Join timed out for args %v, retrying", ck.me, args)
+					continue
+				}
 			}
+
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -80,17 +132,42 @@ func (ck *Clerk) Leave(gids []int) {
 	args.LastRequest = ck.lastRequest + 1
 	args.ClientId = ck.me
 
+	// retry logic
+	leader := ck.leader
+	servers := len(ck.servers)
+
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for offset := 0; offset < servers; offset++ {
 			var reply LeaveReply
-			ok := srv.Call("ShardCtrler.Leave", args, &reply)
-			if ok && reply.WrongLeader == false {
-				ck.lastRequest++
-				return
+			srv := ck.servers[(leader+offset)%servers]
+			DPrintf("[%d] Leave called with args %v, reply %v", ck.me, args, reply)
+			ok := make(chan bool)
+			go func() {
+				ok <- srv.Call("ShardCtrler.Leave", args, &reply)
+			}()
+			select {
+			case <-ok:
+				DPrintf("[%d] Leave reply %v from server %d", ck.me, reply, (leader+offset)%servers)
+				if reply.Err == OK {
+					ck.leader = (leader + offset) % servers // update leader to the server that successfully processed the request
+					DPrintf("[%d] Leave succeeded with args %v, reply %v", ck.me, args, reply)
+					ck.lastRequest = args.LastRequest // update last request
+					return
+				}
+				if reply.Err == WrongLeader {
+					DPrintf("[%d] Leave failed with wrong leader, retrying", ck.me)
+					continue // try next server
+				} else {
+					DPrintf("[%d] Leave failed with error %v, retrying", ck.me, reply.Err)
+					continue // try next server
+				}
+			case <-time.After(100 * time.Millisecond):
+				DPrintf("[%d] Leave timed out for args %v, retrying", ck.me, args)
+				// If we timeout, we can try the next server.
+				continue // try next server
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -102,14 +179,42 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.LastRequest = ck.lastRequest + 1
 	args.ClientId = ck.me
 
+	// retry logic
+	leader := ck.leader
+	servers := len(ck.servers)
+
 	for {
 		// try each known server.
-		for _, srv := range ck.servers {
+		for offset := 0; offset < servers; offset++ {
 			var reply MoveReply
-			ok := srv.Call("ShardCtrler.Move", args, &reply)
-			if ok && reply.WrongLeader == false {
-				ck.lastRequest++
-				return
+			srv := ck.servers[(leader+offset)%servers]
+			DPrintf("[%d] Move called with args %v, reply %v", ck.me, args, reply)
+			// make the RPC call
+			ok := make(chan bool)
+			go func() {
+				ok <- srv.Call("ShardCtrler.Move", args, &reply)
+			}()
+			// wait for the reply
+			select {
+			case <-ok:
+				DPrintf("[%d] Move reply %v from server %d", ck.me, reply, (leader+offset)%servers)
+				if reply.Err == OK {
+					ck.leader = (leader + offset) % servers // update leader to the server that successfully processed the request
+					DPrintf("[%d] Move succeeded with args %v, reply %v", ck.me, args, reply)
+					ck.lastRequest = args.LastRequest // update last request
+					return
+				}
+				if reply.Err == WrongLeader {
+					DPrintf("[%d] Move failed with wrong leader, retrying", ck.me)
+					continue // try next server
+				} else {
+					DPrintf("[%d] Move failed with error %v, retrying", ck.me, reply.Err)
+					continue // try next server
+				}
+			case <-time.After(100 * time.Millisecond):
+				DPrintf("[%d] Move timed out for args %v, retrying", ck.me, args)
+				// If we timeout, we can try the next server.
+				continue // try next server
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

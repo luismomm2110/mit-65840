@@ -31,7 +31,8 @@ type Config struct {
 }
 
 const (
-	OK = "OK"
+	OK          = "OK"
+	WrongLeader = "WrongLeader"
 )
 
 type Err string
@@ -46,6 +47,8 @@ type JoinReply struct {
 	WrongLeader bool
 	Err         Err
 }
+
+// toString of Join Reply
 
 type LeaveArgs struct {
 	GIDs        []int

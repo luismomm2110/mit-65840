@@ -877,10 +877,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	term := rf.currentTerm
-	//DPrintf("server %v received command %v", rf.me, command)
+	DPrintf("server %v received command %v", rf.me, command)
 	rf.logs = append(rf.logs, LogEntry{term, command})
 	// size of logs
-	//DPrintf("server %v size of logs after receive %v", rf.me, rf.GetSize())
+	DPrintf("server %v size of logs after receive %v", rf.me, rf.GetSize())
 
 	return rf.getLastIndex(), term, true
 }
