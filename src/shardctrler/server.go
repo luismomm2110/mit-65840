@@ -20,8 +20,7 @@ type ShardCtrler struct {
 
 	// Your data here.
 
-	configs                   []Config // indexed by config num
-	gids                      map[int]struct{}
+	configs                   []Config        // indexed by config num
 	lastRequestForClient      map[int64]int64 // maps clientId to greatest requestId seen so far that we can deduplicate requests
 	lastPersistedIndex        int
 	chanByRequestIdByClientId map[int64]map[int64]chan raft.ApplyMsg
@@ -277,7 +276,6 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 
 type Snapshot struct {
 	Configs              []Config
-	Gids                 map[int]struct{}
 	LastRequestForClient map[int64]int64 // maps clientId to greatest requestId seen so far that we can deduplicate requests
 }
 
@@ -296,9 +294,8 @@ func (sc *ShardCtrler) restoreSnapshot(data []byte) {
 		log.Fatalf("[restoreSnapshot] Error restoring snapshot %v", err)
 	}
 	sc.configs = snapshot.Configs
-	sc.gids = snapshot.Gids
 	sc.lastRequestForClient = snapshot.LastRequestForClient
-	DPrintf("[%d] restored snapshot with configs %v, gids %v, lastRequestForClient %v", sc.me, sc.configs, sc.gids, sc.lastRequestForClient)
+	DPrintf("[%d] restored snapshot with configs %v, lastRequestForClient %v", sc.me, sc.configs, sc.lastRequestForClient)
 }
 
 func (sc *ShardCtrler) apply() {
@@ -354,7 +351,6 @@ func (sc *ShardCtrler) snapshot(index int) {
 	}
 	snapshot := Snapshot{
 		Configs:              sc.configs,
-		Gids:                 sc.gids,
 		LastRequestForClient: sc.lastRequestForClient,
 	}
 	sc.lastPersistedIndex = index
@@ -381,7 +377,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	sc.configs = make([]Config, 1)
 	sc.configs[0].Groups = map[int][]string{}
-	sc.gids = map[int]struct{}{}
 	DPrintf("[%v] starting server", sc.me)
 
 	labgob.Register(Op{})
@@ -408,7 +403,7 @@ func (sc *ShardCtrler) applyJoin(receivedServers map[int][]string) {
 		groups[k] = v
 		newGid = k
 	}
-	if _, ok := sc.gids[newGid]; ok {
+	if _, ok := lastConfig.Groups[newGid]; ok {
 		msg := fmt.Sprintf("newGid %d already exists", newGid)
 		panic(msg)
 	}
@@ -434,7 +429,6 @@ func (sc *ShardCtrler) applyJoin(receivedServers map[int][]string) {
 		Shards: newShards,
 		Groups: groups,
 	}
-	sc.gids = gids
 	sc.configs = append(sc.configs, config)
 	DPrintf("[%d] new config after join %v with len %v", sc.me, config, len(sc.configs))
 }
@@ -446,13 +440,11 @@ func (sc *ShardCtrler) applyLeave(receivedGids []int) {
 	DPrintf("[%d] last config %v before leave", sc.me, lastConfig)
 	defer DPrintf("[%d] last config %v after leave", sc.me, lastConfig)
 	groups := cloneGroups(lastConfig.Groups)
-	var newGid int
 	for _, v := range receivedGids {
 		DPrintf("[%d] received gid %d from gids %v", sc.me, v, groups)
 		delete(groups, v)
 	}
 	DPrintf("[%d] configs after leave %v", sc.me, sc.configs)
-	sc.gids[newGid] = struct{}{}
 	if len(groups) > 0 {
 		DPrintf("[%d]  groups after leave %v with len %v", sc.me, groups, len(groups))
 		shardByGroup := NShards/(len(groups)) - 1
