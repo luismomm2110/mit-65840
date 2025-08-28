@@ -48,7 +48,7 @@ func (ck *Clerk) Query(num int) Config {
 			server := (leader + offset) % servers
 			reply := QueryReply{}
 			ok := make(chan bool)
-			DPrintf("[%d] Query called with args %v, reply %v", ck.me, args, reply)
+			DPrintf("[%d] Query called with args %v, reply %v to server %d", ck.me, args, reply, server)
 			go func() {
 				ok <- ck.servers[server].Call("ShardCtrler.Query", args, &reply)
 			}()
@@ -64,6 +64,7 @@ func (ck *Clerk) Query(num int) Config {
 					}
 					if reply.Err == WrongLeader {
 						DPrintf("[%d] Query failed with wrong leader, retrying", ck.me)
+						time.Sleep(100 * time.Millisecond)
 						continue // try next server
 					} else {
 						DPrintf("[%d] Query failed with error %v, retrying", ck.me, reply.Err)
@@ -97,7 +98,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 			var reply JoinReply
 			ok := make(chan bool)
 			// try each known server.
-			DPrintf("[%d] Join called with args %v, reply %v", ck.me, args, reply)
+			DPrintf("[%d] Join called with args %v, reply %v to server %d", ck.me, args, reply, server)
 			go func() {
 				ok <- ck.servers[server].Call("ShardCtrler.Join", args, &reply)
 			}()
@@ -111,6 +112,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 					return
 				} else if reply.Err == WrongLeader {
 					DPrintf("[%d] Join failed with wrong leader, retrying", ck.me)
+					time.Sleep(100 * time.Millisecond)
 				} else {
 					DPrintf("[%d] Join failed with error %v, retrying", ck.me, reply.Err)
 				}

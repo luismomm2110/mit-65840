@@ -873,14 +873,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	defer rf.persist()
 
 	if rf.state != Leader {
+		DPrintf("Raft: server %v is not leader %v", rf.me, rf.currentTerm)
 		return -1, rf.currentTerm, false
 	}
 
 	term := rf.currentTerm
-	DPrintf("server %v received command %v", rf.me, command)
+	DPrintf("Raft: server %v received command %v", rf.me, command)
 	rf.logs = append(rf.logs, LogEntry{term, command})
 	// size of logs
-	DPrintf("server %v size of logs after receive %v", rf.me, rf.GetSize())
+	DPrintf("Raft: server %v size of logs after receive %v", rf.me, rf.GetSize())
 
 	return rf.getLastIndex(), term, true
 }

@@ -2,7 +2,10 @@ package shardctrler
 
 import (
 	"6.5840/raft"
+	"bytes"
 	"fmt"
+	"log"
+	"sort"
 	"sync/atomic"
 )
 import "6.5840/labrpc"
@@ -87,7 +90,6 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	if !ok {
 		c = make(chan raft.ApplyMsg, 1)
 		clientChans[args.LastRequest] = c
-		sc.lastRequestForClient[args.ClientId] = args.LastRequest
 	}
 	sc.mu.Unlock()
 	DPrintf("[%d] Join command after channel with args %v", sc.me, args)
@@ -95,7 +97,9 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	reply.WrongLeader = false
+	sc.lastRequestForClient[args.ClientId] = args.LastRequest
 	reply.Err = OK
+	DPrintf("[%d] configs are %v", sc.me, sc.configs)
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -121,7 +125,6 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	if !isLeader {
 		reply.WrongLeader = true
 		reply.Err = WrongLeader
-		sc.mu.Unlock()
 		return
 	}
 	sc.mu.Lock()
@@ -134,19 +137,66 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	if !ok {
 		c = make(chan raft.ApplyMsg, 1)
 		clientChans[args.LastRequest] = c
-		sc.lastRequestForClient[args.ClientId] = args.LastRequest
 	}
 	DPrintf("[%d] Leave command with args %v", sc.me, args)
 	sc.mu.Unlock()
 	<-c
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+	DPrintf("[%d] Leave command after channel with args %v", sc.me, args)
+	sc.lastRequestForClient[args.ClientId] = args.LastRequest
 	reply.WrongLeader = false
 	reply.Err = OK
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
+	sc.mu.Lock()
+	lastRequest := sc.lastRequestForClient[args.ClientId]
+
+	DPrintf("[%d] Move command with args %v", sc.me, args)
+	if args.LastRequest <= lastRequest {
+		reply.WrongLeader = false
+		reply.Err = OK
+		DPrintf("[%d] received move command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastRequestForClient[args.ClientId])
+		sc.mu.Unlock()
+		return
+	}
+
+	sc.mu.Unlock()
+	_, _, isLeader := sc.rf.Start(Op{
+		Type:      MoveOp,
+		RequestId: args.LastRequest,
+		ClientId:  args.ClientId,
+		Shard:     args.Shard,
+		GID:       args.GID,
+	})
+
+	if !isLeader {
+		reply.WrongLeader = true
+		reply.Err = WrongLeader
+		return
+	}
+	sc.mu.Lock()
+	clientChans, ok := sc.chanByRequestIdByClientId[args.ClientId]
+	if !ok {
+		clientChans = make(map[int64]chan raft.ApplyMsg)
+		sc.chanByRequestIdByClientId[args.ClientId] = clientChans
+	}
+	c, ok := clientChans[args.LastRequest]
+	if !ok {
+		c = make(chan raft.ApplyMsg, 1)
+		clientChans[args.LastRequest] = c
+	}
+	sc.mu.Unlock()
+	// wait for the command to be applied
+	<-c
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	reply.WrongLeader = false
+	reply.Err = OK
+	sc.lastRequestForClient[args.ClientId] = args.LastRequest
+	DPrintf("[%d] Move command applied with args %v", sc.me, args)
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
@@ -166,12 +216,47 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	}
 	sc.mu.Unlock()
 
-	config := sc.applyQuery(args.Num)
+	_, _, isLeader := sc.rf.Start(Op{
+		Type:      QueryOp,
+		RequestId: args.LastRequest,
+		ClientId:  args.ClientId,
+		Num:       args.Num,
+	})
+	if !isLeader {
+		reply.WrongLeader = true
+		reply.Err = WrongLeader
+		return
+	}
+	sc.mu.Lock()
+	reply.WrongLeader = false
+	clientChans, ok := sc.chanByRequestIdByClientId[args.ClientId]
+	if !ok {
+		clientChans = make(map[int64]chan raft.ApplyMsg)
+		sc.chanByRequestIdByClientId[args.ClientId] = clientChans
+	}
+	c, ok := clientChans[args.LastRequest]
+	if !ok {
+		c = make(chan raft.ApplyMsg, 1)
+		clientChans[args.LastRequest] = c
+	}
+	sc.mu.Unlock()
+	// wait for the command to be applied
+	<-c
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	DPrintf("[%d] Query command with args %v and len config %d", sc.me, args, len(sc.configs))
+	reply.Err = OK
+	sc.lastRequestForClient[args.ClientId] = args.LastRequest
+	if args.Num == -1 || len(sc.configs) <= args.Num {
+		config := sc.configs[len(sc.configs)-1]
+		reply.WrongLeader = false
+		reply.Config = config
+		return
+	}
+	config := sc.configs[args.Num]
 	reply.WrongLeader = false
 	reply.Config = config
-	reply.Err = OK
-
-	return
+	DPrintf("[%d] Query command applied with args %v response %v", sc.me, args, reply.Config)
 }
 
 // the tester calls Kill() when a ShardCtrler instance won't
@@ -190,13 +275,35 @@ func (sc *ShardCtrler) Raft() *raft.Raft {
 	return sc.rf
 }
 
+type Snapshot struct {
+	Configs              []Config
+	Gids                 map[int]struct{}
+	LastRequestForClient map[int64]int64 // maps clientId to greatest requestId seen so far that we can deduplicate requests
+}
+
 func (sc *ShardCtrler) restoreSnapshot(data []byte) {
-	// todo
+	if len(data) == 0 {
+		DPrintf("[%d] no snapshot data to restore", sc.me)
+		return
+	}
+	DPrintf("[%d] restoring snapshot with data %v", sc.me, data)
+	var buffer bytes.Buffer
+	buffer.Write(data)
+	decoder := labgob.NewDecoder(&buffer)
+	var snapshot Snapshot
+	err := decoder.Decode(&snapshot)
+	if err != nil {
+		log.Fatalf("[restoreSnapshot] Error restoring snapshot %v", err)
+	}
+	sc.configs = snapshot.Configs
+	sc.gids = snapshot.Gids
+	sc.lastRequestForClient = snapshot.LastRequestForClient
+	DPrintf("[%d] restored snapshot with configs %v, gids %v, lastRequestForClient %v", sc.me, sc.configs, sc.gids, sc.lastRequestForClient)
 }
 
 func (sc *ShardCtrler) apply() {
 	for {
-		if !sc.killed() {
+		if sc.killed() {
 			return
 		}
 
@@ -213,7 +320,7 @@ func (sc *ShardCtrler) apply() {
 		op := msg.Command.(Op)
 		clientId := op.ClientId
 		lastRequest := sc.lastRequestForClient[clientId]
-		DPrintf("[%d] received command %v with clientId %d and lastRequest %d", sc.me, op, clientId, lastRequest)
+		DPrintf("[%d] applying command %v with clientId %d and lastRequest %d", sc.me, op, clientId, lastRequest)
 		if op.RequestId <= lastRequest {
 			DPrintf("[%d]  ignoring command %v with clientId %d and lastRequest %d", sc.me, op, clientId, lastRequest)
 			sc.mu.Unlock()
@@ -226,8 +333,7 @@ func (sc *ShardCtrler) apply() {
 		case LeaveOp:
 			sc.applyLeave(op.GIDs)
 		case MoveOp:
-			// todo implement move
-			DPrintf("[%d]  received move command %v", sc.me, op)
+			sc.applyMove(op.GID, op.Shard)
 		case QueryOp:
 		}
 		c, ok := sc.chanByRequestIdByClientId[clientId][op.RequestId]
@@ -238,7 +344,27 @@ func (sc *ShardCtrler) apply() {
 			DPrintf("[%d]  no channel found for client %d and request %d", sc.me, clientId, op.RequestId)
 		}
 		sc.lastRequestForClient[clientId] = op.RequestId
+		sc.snapshot(msg.CommandIndex)
+		sc.mu.Unlock()
 	}
+}
+func (sc *ShardCtrler) snapshot(index int) {
+	if sc.rf == nil || sc.lastPersistedIndex >= index {
+		return
+	}
+	snapshot := Snapshot{
+		Configs:              sc.configs,
+		Gids:                 sc.gids,
+		LastRequestForClient: sc.lastRequestForClient,
+	}
+	sc.lastPersistedIndex = index
+	var buffer bytes.Buffer
+	encoder := labgob.NewEncoder(&buffer)
+	encoder.Encode(snapshot)
+	//size := sc.rf.GetSize()
+	//if sc.rf.MaxRaftState() != -1 && size > sc.rf.MaxRaftState() {
+	DPrintf("[%d] fazendo snapshot com índice %d e configs %v", sc.me, sc.lastPersistedIndex, sc.configs)
+	sc.rf.Snapshot(sc.lastPersistedIndex, buffer.Bytes())
 }
 
 func (sc *ShardCtrler) killed() bool {
@@ -272,10 +398,11 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 }
 
 func (sc *ShardCtrler) applyJoin(receivedServers map[int][]string) {
-	DPrintf("[%d] received join command with receivedServers %v", sc.me, receivedServers)
+	DPrintf("[%d] applying join command with receivedServers %v", sc.me, receivedServers)
+	DPrintf("[%d] configs before join %v", sc.me, sc.configs)
 	numConfig := len(sc.configs)
 	lastConfig := sc.configs[numConfig-1]
-	groups := lastConfig.Groups
+	groups := cloneGroups(lastConfig.Groups)
 	var newGid int
 	for k, v := range receivedServers {
 		groups[k] = v
@@ -286,13 +413,15 @@ func (sc *ShardCtrler) applyJoin(receivedServers map[int][]string) {
 		panic(msg)
 	}
 
-	sc.gids[newGid] = struct{}{}
-	shardByGroup := NShards/(len(lastConfig.Groups)) - 1
+	gids := cloneGids(lastConfig)
+	gids[newGid] = struct{}{}
+	shardByGroup := NShards/(len(groups)) - 1
 	var newShards [NShards]int
 	indexKeys := make([]int, 0, len(groups))
 	for k := range groups {
 		indexKeys = append(indexKeys, k)
 	}
+	sort.Ints(indexKeys) // força ordem determinística
 	index := 0
 	for i := range newShards {
 		newShards[i] = indexKeys[index]
@@ -305,19 +434,24 @@ func (sc *ShardCtrler) applyJoin(receivedServers map[int][]string) {
 		Shards: newShards,
 		Groups: groups,
 	}
+	sc.gids = gids
 	sc.configs = append(sc.configs, config)
+	DPrintf("[%d] new config after join %v with len %v", sc.me, config, len(sc.configs))
 }
 
 func (sc *ShardCtrler) applyLeave(receivedGids []int) {
-	DPrintf("[%d] received leave command with receivedServers %v", sc.me, receivedGids)
+	DPrintf("[%d] applying leave command with receivedServers %v", sc.me, receivedGids)
 	numConfig := len(sc.configs)
 	lastConfig := sc.configs[numConfig-1]
-	groups := lastConfig.Groups
+	DPrintf("[%d] last config %v before leave", sc.me, lastConfig)
+	defer DPrintf("[%d] last config %v after leave", sc.me, lastConfig)
+	groups := cloneGroups(lastConfig.Groups)
 	var newGid int
 	for _, v := range receivedGids {
 		DPrintf("[%d] received gid %d from gids %v", sc.me, v, groups)
 		delete(groups, v)
 	}
+	DPrintf("[%d] configs after leave %v", sc.me, sc.configs)
 	sc.gids[newGid] = struct{}{}
 	if len(groups) > 0 {
 		DPrintf("[%d]  groups after leave %v with len %v", sc.me, groups, len(groups))
@@ -341,6 +475,7 @@ func (sc *ShardCtrler) applyLeave(receivedGids []int) {
 			Groups: groups,
 		}
 		sc.configs = append(sc.configs, config)
+		DPrintf("[%d] new config after leave %v with len %v", sc.me, config, sc.configs)
 		return
 	}
 	var newShards [NShards]int
@@ -351,6 +486,7 @@ func (sc *ShardCtrler) applyLeave(receivedGids []int) {
 		Groups: map[int][]string{},
 	}
 	sc.configs = append(sc.configs, config)
+	DPrintf("[%d] new config after leave %v with len %v with group zero", sc.me, config, len(sc.configs))
 }
 
 func (sc *ShardCtrler) applyQuery(index int) Config {
@@ -361,4 +497,51 @@ func (sc *ShardCtrler) applyQuery(index int) Config {
 
 	config := sc.configs[index]
 	return config
+}
+
+func (sc *ShardCtrler) applyMove(GID int, shard int) {
+	DPrintf("[%d] applying move command with GID %d and shard %d", sc.me, GID, shard)
+	numConfig := len(sc.configs)
+	lastConfig := sc.configs[numConfig-1]
+	DPrintf("[%d] last config %v before move", sc.me, lastConfig)
+	defer DPrintf("[%d] last config %v after move", sc.me, lastConfig)
+	groups := cloneGroups(lastConfig.Groups)
+	if _, ok := groups[GID]; !ok {
+		msg := fmt.Sprintf("GID %d does not exist", GID)
+		panic(msg)
+	}
+	newShards := cloneShards(lastConfig.Shards)
+	newShards[shard] = GID
+	config := Config{
+		Num:    numConfig,
+		Shards: newShards,
+		Groups: groups,
+	}
+	sc.configs = append(sc.configs, config)
+	DPrintf("[%d] new config after move %v with len %v", sc.me, config, len(sc.configs))
+}
+
+func cloneGroups(src map[int][]string) map[int][]string {
+	dst := make(map[int][]string, len(src))
+	for gid, servers := range src {
+		ss := make([]string, len(servers))
+		copy(ss, servers)
+		dst[gid] = ss
+	}
+	return dst
+}
+
+func cloneShards(src [NShards]int) [NShards]int {
+	var dst [NShards]int
+	copy(dst[:], src[:])
+	return dst
+}
+
+func cloneGids(config Config) map[int]struct{} {
+	src := config.Groups
+	dst := make(map[int]struct{}, len(src))
+	for k := range src {
+		dst[k] = struct{}{}
+	}
+	return dst
 }

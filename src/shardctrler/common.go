@@ -1,6 +1,9 @@
 package shardctrler
 
-import "log"
+import (
+	"fmt"
+	"log"
+)
 
 //
 // Shard controller: assigns shards to replication groups.
@@ -28,6 +31,10 @@ type Config struct {
 	Num    int              // config number
 	Shards [NShards]int     // shard -> gid
 	Groups map[int][]string // gid -> servers[]
+}
+
+func (c Config) String() string {
+	return fmt.Sprintf("Num: %d, Shards: %v, Groups: %v", c.Num, c.Shards, c.Groups)
 }
 
 const (

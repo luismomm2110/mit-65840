@@ -185,7 +185,7 @@ func TestBasic(t *testing.T) {
 	//	ck.Leave([]int{gid4})
 	//	fmt.Printf("  ... Passed\n")
 	//})
-	//
+
 	//const npara = 10
 	//t.Run("ConcurrentLeaveJoin", func(t *testing.T) {
 	//	fmt.Printf("Test: Concurrent leave/join ...\n")
@@ -215,7 +215,7 @@ func TestBasic(t *testing.T) {
 	//
 	//	fmt.Printf("  ... Passed\n")
 	//})
-	//
+
 	//var c1, c2 Config
 	//t.Run("MinimalTransfer", func(t *testing.T) {
 	//	fmt.Printf("Test: Minimal transfers after joins ...\n")
@@ -469,30 +469,165 @@ func TestBasic(t *testing.T) {
 //			}
 //		}
 //
-//		fmt.Printf("  ... Passed\n")
-//	})
-//
-//	t.Run("AgreeConfig", func(t *testing.T) {
-//		fmt.Printf("Test: Check Same config on servers ...\n")
-//
-//		isLeader, leader := cfg.Leader()
-//		if !isLeader {
-//			t.Fatalf("Leader not found")
-//		}
-//		c := ck.Query(-1) // Config leader claims
-//
-//		cfg.ShutdownServer(leader)
-//
-//		attempts := 0
-//		for isLeader, leader = cfg.Leader(); isLeader; time.Sleep(1 * time.Second) {
-//			if attempts++; attempts >= 3 {
-//				t.Fatalf("Leader not found")
-//			}
-//		}
-//
-//		c1 = ck.Query(-1)
-//		check_same_config(t, c, c1)
-//
-//		fmt.Printf("  ... Passed\n")
-//	})
-//}
+////func testmulti(t *testing.t) {
+////	const nservers = 3
+////	cfg := make_config(t, nservers, false)
+////	defer cfg.cleanup()
+////
+////	ck := cfg.makeclient(cfg.all())
+////
+////	t.run("leavejoin", func(t *testing.t) {
+////		fmt.printf("test: multi-group join/leave ...\n")
+////
+////		cfa := make([]config, 6)
+////		cfa[0] = ck.query(-1)
+////
+////		check(t, []int{}, ck)
+////
+////		var gid1 int = 1
+////		var gid2 int = 2
+////		ck.join(map[int][]string{
+////			gid1: []string{"x", "y", "z"},
+////			gid2: []string{"a", "b", "c"},
+////		})
+////		check(t, []int{gid1, gid2}, ck)
+////		cfa[1] = ck.query(-1)
+////
+////		var gid3 int = 3
+////		ck.join(map[int][]string{gid3: []string{"j", "k", "l"}})
+////		check(t, []int{gid1, gid2, gid3}, ck)
+////		cfa[2] = ck.query(-1)
+////
+////		cfx := ck.query(-1)
+////		sa1 := cfx.groups[gid1]
+////		if len(sa1) != 3 || sa1[0] != "x" || sa1[1] != "y" || sa1[2] != "z" {
+////			t.fatalf("wrong servers for gid %v: %v\n", gid1, sa1)
+////		}
+////		sa2 := cfx.groups[gid2]
+////		if len(sa2) != 3 || sa2[0] != "a" || sa2[1] != "b" || sa2[2] != "c" {
+////			t.fatalf("wrong servers for gid %v: %v\n", gid2, sa2)
+////		}
+////		sa3 := cfx.groups[gid3]
+////		if len(sa3) != 3 || sa3[0] != "j" || sa3[1] != "k" || sa3[2] != "l" {
+////			t.fatalf("wrong servers for gid %v: %v\n", gid3, sa3)
+////		}
+////
+////		ck.leave([]int{gid1, gid3})
+////		check(t, []int{gid2}, ck)
+////		cfa[3] = ck.query(-1)
+////
+////		cfx = ck.query(-1)
+////		sa2 = cfx.groups[gid2]
+////		if len(sa2) != 3 || sa2[0] != "a" || sa2[1] != "b" || sa2[2] != "c" {
+////			t.fatalf("wrong servers for gid %v: %v\n", gid2, sa2)
+////		}
+////
+////		ck.leave([]int{gid2})
+////
+////		fmt.printf("  ... passed\n")
+////	})
+////
+////	const npara = 10
+////	t.run("concurrentleavejoin", func(t *testing.t) {
+////		fmt.printf("test: concurrent multi leave/join ...\n")
+////
+////		var cka [npara]*clerk
+////		for i := 0; i < len(cka); i++ {
+////			cka[i] = cfg.makeclient(cfg.all())
+////		}
+////		gids := make([]int, npara)
+////		var wg sync.waitgroup
+////		for xi := 0; xi < npara; xi++ {
+////			wg.add(1)
+////			gids[xi] = int(xi + 1000)
+////			go func(i int) {
+////				defer wg.done()
+////				var gid int = gids[i]
+////				cka[i].join(map[int][]string{
+////					gid: []string{
+////						fmt.sprintf("%da", gid),
+////						fmt.sprintf("%db", gid),
+////						fmt.sprintf("%dc", gid)},
+////					gid + 1000: []string{fmt.sprintf("%da", gid+1000)},
+////					gid + 2000: []string{fmt.sprintf("%da", gid+2000)},
+////				})
+////				cka[i].leave([]int{gid + 1000, gid + 2000})
+////			}(xi)
+////		}
+////		wg.wait()
+////		check(t, gids, ck)
+////
+////		fmt.printf("  ... passed\n")
+////	})
+////
+////	var c1, c2 config
+////	t.run("minimaltransfer", func(t *testing.t) {
+////		fmt.printf("test: minimal transfers after multijoins ...\n")
+////
+////		c1 = ck.query(-1)
+////		m := make(map[int][]string)
+////		for i := 0; i < 5; i++ {
+////			var gid = npara + 1 + i
+////			m[gid] = []string{fmt.sprintf("%da", gid), fmt.sprintf("%db", gid)}
+////		}
+////		ck.join(m)
+////		c2 = ck.query(-1)
+////		for i := int(1); i <= npara; i++ {
+////			for j := 0; j < len(c1.shards); j++ {
+////				if c2.shards[j] == i {
+////					if c1.shards[j] != i {
+////						t.fatalf("non-minimal transfer after join()s")
+////					}
+////				}
+////			}
+////		}
+////
+////		fmt.printf("  ... passed\n")
+////	})
+////
+////	t.run("minimaltransferafterleave", func(t *testing.t) {
+////		fmt.printf("test: minimal transfers after multileaves ...\n")
+////
+////		var l []int
+////		for i := 0; i < 5; i++ {
+////			l = append(l, npara+1+i)
+////		}
+////		ck.leave(l)
+////		c3 := ck.query(-1)
+////		for i := int(1); i <= npara; i++ {
+////			for j := 0; j < len(c1.shards); j++ {
+////				if c2.shards[j] == i {
+////					if c3.shards[j] != i {
+////						t.fatalf("non-minimal transfer after leave()s")
+////					}
+////				}
+////			}
+////		}
+////
+////		fmt.printf("  ... passed\n")
+////	})
+////
+////	t.run("agreeconfig", func(t *testing.t) {
+////		fmt.printf("test: check same config on servers ...\n")
+////
+////		isleader, leader := cfg.leader()
+////		if !isleader {
+////			t.fatalf("leader not found")
+////		}
+////		c := ck.query(-1) // config leader claims
+////
+////		cfg.shutdownserver(leader)
+////
+////		attempts := 0
+////		for isleader, leader = cfg.leader(); isleader; time.sleep(1 * time.second) {
+////			if attempts++; attempts >= 3 {
+////				t.fatalf("leader not found")
+////			}
+////		}
+////
+////		c1 = ck.query(-1)
+////		check_same_config(t, c, c1)
+////
+////		fmt.printf("  ... passed\n")
+////	})
+////}
