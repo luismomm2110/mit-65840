@@ -91,14 +91,12 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 		clientChans[args.LastRequest] = c
 	}
 	sc.mu.Unlock()
-	DPrintf("[%d] Join command after channel with args %v", sc.me, args)
 	<-c
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	reply.WrongLeader = false
 	sc.lastRequestForClient[args.ClientId] = args.LastRequest
 	reply.Err = OK
-	DPrintf("[%d] configs are %v", sc.me, sc.configs)
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -306,9 +304,10 @@ func (sc *ShardCtrler) apply() {
 
 		msg := <-sc.applyCh
 		DPrintf("[%d] received command %v", sc.me, msg.Command)
-		if !msg.CommandValid {
+		if msg.SnapshotValid {
 			sc.mu.Lock()
-			DPrintf("[%d]  received command %v", sc.me, msg.Command)
+			DPrintf("[%d] received command invalid %v", sc.me, msg)
+			sc.restoreSnapshot(msg.Snapshot)
 			sc.mu.Unlock()
 			continue
 		}
@@ -499,7 +498,7 @@ func (sc *ShardCtrler) applyMove(GID int, shard int) {
 	defer DPrintf("[%d] last config %v after move", sc.me, lastConfig)
 	groups := cloneGroups(lastConfig.Groups)
 	if _, ok := groups[GID]; !ok {
-		msg := fmt.Sprintf("GID %d does not exist", GID)
+		msg := fmt.Sprintf("[%d] GID %d does not exist", sc.me, GID)
 		panic(msg)
 	}
 	newShards := cloneShards(lastConfig.Shards)
