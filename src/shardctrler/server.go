@@ -358,7 +358,7 @@ func (sc *ShardCtrler) snapshot(index int) {
 	encoder.Encode(snapshot)
 	//size := sc.rf.GetSize()
 	//if sc.rf.MaxRaftState() != -1 && size > sc.rf.MaxRaftState() {
-	DPrintf("[%d] fazendo snapshot com índice %d e configs %v", sc.me, sc.lastPersistedIndex, sc.configs)
+	//DPrintf("[%d] fazendo snapshot com índice %d e configs %v", sc.me, sc.lastPersistedIndex, sc.configs)
 	sc.rf.Snapshot(sc.lastPersistedIndex, buffer.Bytes())
 }
 
@@ -393,91 +393,275 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 func (sc *ShardCtrler) applyJoin(receivedServers map[int][]string) {
 	DPrintf("[%d] applying join command with receivedServers %v", sc.me, receivedServers)
-	DPrintf("[%d] configs before join %v", sc.me, sc.configs)
 	numConfig := len(sc.configs)
 	lastConfig := sc.configs[numConfig-1]
-	groups := cloneGroups(lastConfig.Groups)
-	var newGid int
-	for k, v := range receivedServers {
-		groups[k] = v
-		newGid = k
-	}
-	if _, ok := lastConfig.Groups[newGid]; ok {
-		msg := fmt.Sprintf("newGid %d already exists", newGid)
-		panic(msg)
-	}
 
-	gids := cloneGids(lastConfig)
-	gids[newGid] = struct{}{}
-	shardByGroup := NShards/(len(groups)) - 1
-	var newShards [NShards]int
-	indexKeys := make([]int, 0, len(groups))
-	for k := range groups {
-		indexKeys = append(indexKeys, k)
-	}
-	sort.Ints(indexKeys) // força ordem determinística
-	index := 0
-	for i := range newShards {
-		newShards[i] = indexKeys[index]
-		if i == shardByGroup {
-			index++
+	// 1) Clonar e adicionar novos grupos; ignorar duplicados
+	groups := cloneGroups(lastConfig.Groups)
+	added := false
+	for gid, servers := range receivedServers {
+		if _, exists := groups[gid]; !exists {
+			groups[gid] = servers
+			added = true
 		}
 	}
+	// Se nada novo foi adicionado, é no-op (mantém estabilidade)
+	if !added {
+		config := Config{
+			Num:    numConfig,
+			Shards: lastConfig.Shards,
+			Groups: groups,
+		}
+		sc.configs = append(sc.configs, config)
+		DPrintf("[%d] join no-op (no new groups). new config %v", sc.me, config)
+		return
+	}
+
+	// 2) Ordenar GIDs para determinismo
+	indexKeys := make([]int, 0, len(groups))
+	for gid := range groups {
+		indexKeys = append(indexKeys, gid)
+	}
+	sort.Ints(indexKeys)
+
+	// 3) Calcular alvo por grupo (floor/ceil)
+	var newShards [NShards]int
+	copy(newShards[:], lastConfig.Shards[:])
+
+	G := len(indexKeys)
+	if G == 0 {
+		// Nenhum grupo: tudo 0
+		config := Config{
+			Num:    numConfig,
+			Shards: [NShards]int{},
+			Groups: map[int][]string{},
+		}
+		sc.configs = append(sc.configs, config)
+		DPrintf("[%d] new config after join (no groups) %v", sc.me, config)
+		return
+	}
+	base := NShards / G
+	rem := NShards % G
+	perGroup := make(map[int]int, G)
+	for i, gid := range indexKeys {
+		perGroup[gid] = base
+		if i < rem {
+			perGroup[gid]++
+		}
+	}
+
+	// 4) Contagem atual por grupo + coletar shards não atribuídos (gid==0 ou gid removido)
+	count := make(map[int]int, G)
+	unassigned := make([]int, 0)
+	for i, gid := range lastConfig.Shards {
+		if _, ok := groups[gid]; ok && gid != 0 {
+			count[gid]++
+		} else {
+			unassigned = append(unassigned, i)
+		}
+	}
+
+	// 5) Preencher primeiro com shards não atribuídos -> grupos abaixo do alvo
+	uIdx := 0 // índice em indexKeys do próximo grupo que ainda precisa receber
+	for _, sIdx := range unassigned {
+		for uIdx < G {
+			g := indexKeys[uIdx]
+			if count[g] < perGroup[g] {
+				newShards[sIdx] = g
+				count[g]++
+				if count[g] == perGroup[g] {
+					uIdx++
+				}
+				break
+			}
+			uIdx++
+		}
+		// Se todos bateram alvo antes de consumir unassigned, sobra fica como está (mas perGroup soma NShards, então tende a fechar)
+	}
+
+	// 6) Montar listas de over/under pós-preenchimento
+	over := make([]int, 0)
+	under := make([]int, 0)
+	for _, gid := range indexKeys {
+		if count[gid] > perGroup[gid] {
+			over = append(over, gid)
+		} else if count[gid] < perGroup[gid] {
+			under = append(under, gid)
+		}
+	}
+
+	// 7) Se ainda houver under, mover de over -> under minimizando movimentação
+	// Determinístico: percorre shards 0..NShards-1, over/under em ordem crescente
+	uPos := 0
+	for _, gOver := range over {
+		for i := 0; i < NShards && uPos < len(under); i++ {
+			if count[gOver] == perGroup[gOver] {
+				break
+			}
+			if newShards[i] != gOver {
+				continue
+			}
+			// avançar até um under que ainda precise
+			for uPos < len(under) && count[under[uPos]] >= perGroup[under[uPos]] {
+				uPos++
+			}
+			if uPos >= len(under) {
+				break
+			}
+			gUnder := under[uPos]
+
+			// mover i: gOver -> gUnder
+			newShards[i] = gUnder
+			count[gOver]--
+			count[gUnder]++
+			if count[gUnder] == perGroup[gUnder] {
+				uPos++
+			}
+		}
+		if uPos >= len(under) {
+			break
+		}
+	}
+
+	// 8) Persistir nova configuração
 	config := Config{
 		Num:    numConfig,
 		Shards: newShards,
 		Groups: groups,
 	}
 	sc.configs = append(sc.configs, config)
-	DPrintf("[%d] new config after join %v with len %v", sc.me, config, len(sc.configs))
+	DPrintf("[%d] new config after join %v", sc.me, config)
 }
 
 func (sc *ShardCtrler) applyLeave(receivedGids []int) {
-	DPrintf("[%d] applying leave command with receivedServers %v", sc.me, receivedGids)
+	DPrintf("[%d] applying leave command with receivedGids %v", sc.me, receivedGids)
 	numConfig := len(sc.configs)
 	lastConfig := sc.configs[numConfig-1]
-	DPrintf("[%d] last config %v before leave", sc.me, lastConfig)
-	defer DPrintf("[%d] last config %v after leave", sc.me, lastConfig)
+
+	// 1) Remover grupos que saem
 	groups := cloneGroups(lastConfig.Groups)
-	for _, v := range receivedGids {
-		DPrintf("[%d] received gid %d from gids %v", sc.me, v, groups)
-		delete(groups, v)
+	for _, gid := range receivedGids {
+		delete(groups, gid)
 	}
-	DPrintf("[%d] configs after leave %v", sc.me, sc.configs)
-	if len(groups) > 0 {
-		DPrintf("[%d]  groups after leave %v with len %v", sc.me, groups, len(groups))
-		shardByGroup := NShards/(len(groups)) - 1
+
+	// Caso sem grupos -> zera tudo
+	if len(groups) == 0 {
 		var newShards [NShards]int
-		indexKeys := make([]int, 0, len(groups))
-		for k := range groups {
-			indexKeys = append(indexKeys, k)
-		}
-		index := 0
-		for i := range newShards {
-			newShards[i] = indexKeys[index]
-			if i == shardByGroup {
-				index++
-			}
-		}
-		DPrintf("[%d] newShards after leave %v with len %v", sc.me, newShards, len(newShards))
 		config := Config{
 			Num:    numConfig,
 			Shards: newShards,
-			Groups: groups,
+			Groups: map[int][]string{},
 		}
 		sc.configs = append(sc.configs, config)
-		DPrintf("[%d] new config after leave %v with len %v", sc.me, config, sc.configs)
+		DPrintf("[%d] new config after leave (no groups) %v", sc.me, config)
 		return
 	}
+
+	// 2) Alvo por grupo (floor/ceil) de forma determinística
+	indexKeys := make([]int, 0, len(groups))
+	for gid := range groups {
+		indexKeys = append(indexKeys, gid)
+	}
+	sort.Ints(indexKeys)
+
+	G := len(indexKeys)
+	base := NShards / G
+	rem := NShards % G
+	perGroup := make(map[int]int, G)
+	for i, gid := range indexKeys {
+		perGroup[gid] = base
+		if i < rem {
+			perGroup[gid]++
+		}
+	}
+
+	// 3) Contar a distribuição atual (apenas dos grupos remanescentes)
 	var newShards [NShards]int
-	newShards = [10]int{}
+	copy(newShards[:], lastConfig.Shards[:])
+
+	count := make(map[int]int, G)
+	unassigned := make([]int, 0) // índices de shards que pertenciam a grupos removidos
+	for i, gid := range lastConfig.Shards {
+		if _, ok := groups[gid]; ok {
+			count[gid]++
+		} else {
+			unassigned = append(unassigned, i)
+		}
+	}
+
+	// 4) Preencher primeiro usando apenas os shards "órfãos"
+	//    Preenchemos grupos "magros" na ordem de indexKeys e shards por índice crescente.
+	underIdx := 0 // índice em indexKeys do próximo grupo que ainda precisa receber
+	for _, idx := range unassigned {
+		// avançar até encontrar um grupo que ainda precise
+		for underIdx < G {
+			gid := indexKeys[underIdx]
+			if count[gid] < perGroup[gid] {
+				newShards[idx] = gid
+				count[gid]++
+				if count[gid] == perGroup[gid] {
+					underIdx++
+				}
+				break
+			}
+			underIdx++
+		}
+		// se todos bateram alvo antes de consumir todos órfãos, sobras continuarão reassinadas
+		// abaixo quando checarmos over/under (mas em teoria não sobra se perGroup soma NShards).
+	}
+
+	// 5) Verificar se ainda há desequilíbrio (grupos over/under)
+	over := make([]int, 0)
+	under := make([]int, 0)
+	for _, gid := range indexKeys {
+		if count[gid] > perGroup[gid] {
+			over = append(over, gid)
+		} else if count[gid] < perGroup[gid] {
+			under = append(under, gid)
+		}
+	}
+
+	// 6) Se ainda faltar, mover do(s) over para under
+	//    Determinístico: iterate shards 0..NShards-1; over e under em ordem crescente.
+	uPos := 0
+	for _, gOver := range over {
+		for i := 0; i < NShards && uPos < len(under); i++ {
+			if count[gOver] == perGroup[gOver] {
+				break
+			}
+			if newShards[i] != gOver {
+				continue
+			}
+			// achar próximo under que ainda precise
+			for uPos < len(under) && count[under[uPos]] >= perGroup[under[uPos]] {
+				uPos++
+			}
+			if uPos >= len(under) {
+				break
+			}
+			gUnder := under[uPos]
+
+			// move i de gOver -> gUnder
+			newShards[i] = gUnder
+			count[gOver]--
+			count[gUnder]++
+			if count[gUnder] == perGroup[gUnder] {
+				uPos++
+			}
+		}
+		if uPos >= len(under) {
+			break
+		}
+	}
+
+	// 7) Montar nova configuração
 	config := Config{
 		Num:    numConfig,
 		Shards: newShards,
-		Groups: map[int][]string{},
+		Groups: groups,
 	}
 	sc.configs = append(sc.configs, config)
-	DPrintf("[%d] new config after leave %v with len %v with group zero", sc.me, config, len(sc.configs))
+	DPrintf("[%d] new config after leave %v", sc.me, config)
 }
 
 func (sc *ShardCtrler) applyQuery(index int) Config {

@@ -1,14 +1,63 @@
 package shardkv
 
-import "6.5840/labrpc"
+import (
+	"6.5840/labrpc"
+	"bytes"
+	"log"
+	"sync/atomic"
+)
 import "6.5840/raft"
 import "sync"
 import "6.5840/labgob"
+
+const Debug = true
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
+
+type OpType int
+
+const (
+	OpTypeGet OpType = iota
+	OpTypePut
+	OpTypeAppend
+	OpTypePutAppend
+)
+
+type Snapshot struct {
+	Values               map[string]string
+	LastRequestForClient map[int64]int64
+}
+
+func (opType OpType) String() string {
+	switch opType {
+	case OpTypeGet:
+		return "Get"
+	case OpTypePut:
+		return "Put"
+	case OpTypeAppend:
+		return "Append"
+	default:
+		return "Unknown"
+	}
+}
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Key       string
+	Value     string
+	OpType    OpType
+	RequestId int64
+	ClientId  int64
+
+	// // specific fields for each operation
+
 }
 
 type ShardKV struct {
@@ -20,16 +69,107 @@ type ShardKV struct {
 	gid          int
 	ctrlers      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
+	dead         int32
 
 	// Your definitions here.
+	kvStore                   map[string]string
+	chanByRequestIdByClientId map[int64]map[int64]chan raft.ApplyMsg // ephemeral channels for each requestId by clientId
+	lastRequestForClient      map[int64]int64                        // maps clientId to greatest requestId seen so far that we can deduplicate requests
+	lastPersistedIndex        int
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	kv.mu.Lock()
+	lastRequest := kv.lastRequestForClient[args.ClientId]
+	if args.RequestId <= lastRequest {
+		reply.Err = OK
+		reply.Value = kv.kvStore[args.Key]
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+	op := Op{
+		Key:       args.Key,
+		OpType:    OpTypeGet,
+		RequestId: args.RequestId,
+		ClientId:  args.ClientId,
+	}
+	_, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	kv.mu.Lock()
+	clientChans, ok := kv.chanByRequestIdByClientId[args.ClientId]
+	if !ok {
+		clientChans = make(map[int64]chan raft.ApplyMsg)
+		kv.chanByRequestIdByClientId[args.ClientId] = clientChans
+	}
+	c, ok := clientChans[args.RequestId]
+	if !ok {
+		c = make(chan raft.ApplyMsg, 1)
+		clientChans[args.RequestId] = c
+	}
+	DPrintf("Server %d waiting get for request %v", kv.me, args)
+	kv.mu.Unlock()
+	<-c
+	DPrintf("Server %d received get request %v from channel %v", kv.me, args, c)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	reply.Value = kv.kvStore[args.Key]
+	DPrintf("Server %d returning value %v for Get request %v", kv.me, reply.Value, args)
+	reply.Err = OK
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	DPrintf("Server %d received putappend request %v", kv.me, args)
+	kv.mu.Lock()
+	lastRequest := kv.lastRequestForClient[args.ClientId]
+	if args.RequestId <= lastRequest {
+		reply.Err = OK
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+	var opType OpType
+	if args.Op == "Put" {
+		opType = OpTypePut
+	}
+	if args.Op == "Append" {
+		opType = OpTypeAppend
+	}
+	op := Op{
+		Key:       args.Key,
+		Value:     args.Value,
+		OpType:    opType,
+		RequestId: args.RequestId,
+		ClientId:  args.ClientId,
+	}
+	_, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+	kv.mu.Lock()
+	clientChans, ok := kv.chanByRequestIdByClientId[args.ClientId]
+	if !ok {
+		clientChans = make(map[int64]chan raft.ApplyMsg)
+		kv.chanByRequestIdByClientId[args.ClientId] = clientChans
+	}
+	c, ok := clientChans[args.RequestId]
+	if !ok {
+		c = make(chan raft.ApplyMsg, 1)
+		clientChans[args.RequestId] = c
+	}
+	DPrintf("Server %d waiting putappend for request %v", kv.me, args)
+	kv.mu.Unlock()
+	<-c
+	DPrintf("Server %d received putappend request %v from channel %v", kv.me, args, c)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	reply.Err = OK
 }
 
 // the tester calls Kill() when a ShardKV instance won't
@@ -78,7 +218,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.make_end = make_end
 	kv.gid = gid
 	kv.ctrlers = ctrlers
-
+	kv.kvStore = make(map[string]string)
+	kv.chanByRequestIdByClientId = make(map[int64]map[int64]chan raft.ApplyMsg)
+	kv.lastRequestForClient = make(map[int64]int64)
+	kv.lastPersistedIndex = 0
 	// Your initialization code here.
 
 	// Use something like this to talk to the shardctrler:
@@ -88,4 +231,86 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	return kv
+}
+
+func (kv *ShardKV) apply() {
+	for {
+		if kv.killed() {
+			return
+		}
+
+		msg := <-kv.applyCh
+		if !msg.CommandValid {
+			kv.mu.Lock()
+			kv.restoreFromSnapshot(msg.Snapshot)
+			kv.mu.Unlock()
+			continue
+		}
+		kv.mu.Lock()
+		op := msg.Command.(Op)
+		clientId := op.ClientId
+		lastRequest := kv.lastRequestForClient[clientId]
+		if op.RequestId <= lastRequest {
+			kv.mu.Unlock()
+			continue
+		}
+		DPrintf("Server %d got command %v", kv.me, msg.Command)
+		if op.OpType == OpTypePut {
+			DPrintf("Server %d got put request %v", kv.me, msg.Command)
+			kv.kvStore[op.Key] = op.Value
+		} else if op.OpType == OpTypeAppend {
+			kv.kvStore[op.Key] += op.Value
+		}
+		kv.lastRequestForClient[clientId] = op.RequestId
+		c, exists := kv.chanByRequestIdByClientId[op.ClientId][op.RequestId]
+		if exists {
+			c <- msg
+		}
+		kv.snapshot(msg.CommandIndex)
+		kv.mu.Unlock()
+	}
+}
+
+func (kv *ShardKV) snapshot(index int) {
+	if kv.maxraftstate == -1 {
+		return
+	}
+	size := kv.rf.GetSize()
+	if index <= kv.lastPersistedIndex {
+		return
+	}
+	snapshot := Snapshot{
+		Values:               kv.kvStore,
+		LastRequestForClient: kv.lastRequestForClient,
+	}
+	var buffer bytes.Buffer
+	encoder := labgob.NewEncoder(&buffer)
+	encoder.Encode(snapshot)
+	if size > kv.maxraftstate {
+		kv.rf.Snapshot(kv.lastPersistedIndex, buffer.Bytes())
+	}
+
+	kv.lastPersistedIndex = index
+}
+
+func (kv *ShardKV) restoreFromSnapshot(data []byte) {
+	if data == nil || len(data) == 0 {
+		return
+	}
+	var buffer bytes.Buffer
+	buffer.Write(data)
+	decoder := labgob.NewDecoder(&buffer)
+	var snapshot Snapshot
+	err := decoder.Decode(&snapshot)
+	if err != nil {
+		log.Fatalf("Server %d restoreFromSnapshot error %v", kv.me, err)
+	}
+	kv.kvStore = snapshot.Values
+	kv.lastRequestForClient = snapshot.LastRequestForClient
+	DPrintf("Server %d restoreFromSnapshot with last request for client %v", kv.me, snapshot.LastRequestForClient)
+	DPrintf("Server %d restoreFromSnapshot with values %v", kv.me, snapshot.Values)
+}
+
+func (kv *ShardKV) killed() bool {
+	return atomic.LoadInt32(&kv.dead) == 1
 }
