@@ -29,6 +29,7 @@ type PutAppendArgs struct {
 	RequestId int64
 	ClientId  int64
 	Op        string // "Put" or "Append"
+	ShardId   int
 }
 
 func (op *PutAppendArgs) String() string {
@@ -45,6 +46,7 @@ type GetArgs struct {
 
 	RequestId int64
 	ClientId  int64
+	ShardId   int
 }
 
 type GetReply struct {

@@ -6,7 +6,7 @@ import (
 )
 
 //
-// Shard controller: assigns shards to replication groups.
+// ShardId controller: assigns shards to replication groups.
 //
 // RPC interface:
 // Join(servers) -- add a set of groups (gid -> server-list mapping).

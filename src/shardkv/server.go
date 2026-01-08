@@ -2,15 +2,17 @@ package shardkv
 
 import (
 	"6.5840/labrpc"
+	"6.5840/shardctrler"
 	"bytes"
 	"log"
 	"sync/atomic"
+	"time"
 )
 import "6.5840/raft"
 import "sync"
 import "6.5840/labgob"
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -69,6 +71,7 @@ type ShardKV struct {
 	gid          int
 	ctrlers      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
+	mck          *shardctrler.Clerk
 	dead         int32
 
 	// Your definitions here.
@@ -76,12 +79,19 @@ type ShardKV struct {
 	chanByRequestIdByClientId map[int64]map[int64]chan raft.ApplyMsg // ephemeral channels for each requestId by clientId
 	lastRequestForClient      map[int64]int64                        // maps clientId to greatest requestId seen so far that we can deduplicate requests
 	lastPersistedIndex        int
+	lastConfig                shardctrler.Config
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
+	//isMyShard := kv.isMyShard(args.ShardId)
+	//if !isMyShard {
+	//	reply.Err = ErrWrongGroup
+	//	kv.mu.Unlock()
+	//	return
+	//}
 	if args.RequestId <= lastRequest {
 		reply.Err = OK
 		reply.Value = kv.kvStore[args.Key]
@@ -124,9 +134,17 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	DPrintf("Server %d received putappend request %v", kv.me, args)
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
+	//myShard := kv.isMyShard(args.ShardId)
+	//if !myShard {
+	//	DPrintf("Server %d gid %d failed putappend  to shard %v",
+	//		kv.me, kv.gid, myShard)
+	//	reply.Err = ErrWrongGroup
+	//	kv.mu.Unlock()
+	//	return
+	//}
+	DPrintf("Server %d with gid %d waiting putappend for request %v", kv.me, kv.gid, args)
 	if args.RequestId <= lastRequest {
 		reply.Err = OK
 		kv.mu.Unlock()
@@ -147,6 +165,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		RequestId: args.RequestId,
 		ClientId:  args.ClientId,
 	}
+	DPrintf("Server %d RECEIVED putappend request %v", kv.me, args)
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
@@ -170,6 +189,11 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	reply.Err = OK
+}
+
+func (kv *ShardKV) isMyShard(shardId int) bool {
+	gid := kv.lastConfig.Shards[shardId]
+	return gid == kv.gid
 }
 
 // the tester calls Kill() when a ShardKV instance won't
@@ -225,12 +249,30 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// Your initialization code here.
 
 	// Use something like this to talk to the shardctrler:
-	// kv.mck = shardctrler.MakeClerk(kv.ctrlers)
+	kv.mck = shardctrler.MakeClerk(kv.ctrlers)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+	go kv.apply()
+	go kv.checkConfig()
+
 	return kv
+}
+
+func (kv *ShardKV) checkConfig() {
+	for {
+		if kv.killed() {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+		DPrintf("Server %d checkConfig start", kv.me)
+		DPrintf("Server %d checkConfig ends", kv.me)
+		newConfig := kv.mck.Query(-1)
+		kv.mu.Lock()
+		kv.lastConfig = newConfig
+		kv.mu.Unlock()
+	}
 }
 
 func (kv *ShardKV) apply() {
@@ -240,6 +282,7 @@ func (kv *ShardKV) apply() {
 		}
 
 		msg := <-kv.applyCh
+		DPrintf("Server %d got command %v", kv.me, msg.Command)
 		if !msg.CommandValid {
 			kv.mu.Lock()
 			kv.restoreFromSnapshot(msg.Snapshot)
@@ -254,7 +297,6 @@ func (kv *ShardKV) apply() {
 			kv.mu.Unlock()
 			continue
 		}
-		DPrintf("Server %d got command %v", kv.me, msg.Command)
 		if op.OpType == OpTypePut {
 			DPrintf("Server %d got put request %v", kv.me, msg.Command)
 			kv.kvStore[op.Key] = op.Value

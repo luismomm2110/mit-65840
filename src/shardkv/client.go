@@ -75,15 +75,16 @@ func MakeClerk(ctrlers []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
 	requestId := atomic.AddInt64(&ck.currentRequestId, 1)
+	shard := key2shard(key)
 	ck.currentRequestId = requestId
 	args := GetArgs{
 		Key:       key,
 		RequestId: requestId,
 		ClientId:  ck.me,
+		ShardId:   shard,
 	}
 
 	for {
-		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
 			numServers := len(servers)
@@ -133,6 +134,7 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	requestId := atomic.AddInt64(&ck.currentRequestId, 1)
+	shard := key2shard(key)
 	ck.currentRequestId = requestId
 	args := PutAppendArgs{
 		Key:       key,
@@ -140,10 +142,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		RequestId: requestId,
 		ClientId:  ck.me,
 		Op:        op,
+		ShardId:   shard,
 	}
 
 	for {
-		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
 		if servers, ok := ck.config.Groups[gid]; ok {
 			numServers := len(servers)
@@ -164,12 +166,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 							ck.leader = serverIndex
 							return
 						} else if reply.Err == ErrWrongLeader {
-							//DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
+							DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
 						}
 					}
 				case <-time.After(20 * time.Millisecond):
 					{
-						//DPrintf("Client %d PutAppend key %v value %v to server %d timeout", ck.me, key, value, serverIndex)
+						DPrintf("Client %d PutAppend key %v value %v to server %d timeout", ck.me, key, value, serverIndex)
 						continue
 					}
 				}

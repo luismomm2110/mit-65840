@@ -104,10 +104,10 @@ func (ck *Clerk) Join(servers map[int][]string) {
 			}()
 			select {
 			case <-ok:
-				DPrintf("Shard controller: [%d] Join reply %v from server %d", ck.me, reply, server)
+				DPrintf("ShardId controller: [%d] Join reply %v from server %d", ck.me, reply, server)
 				if reply.Err == OK {
 					ck.leader = server // update leader to the server that successfully processed the request
-					DPrintf("Shard controller: [%d] Join succeeded with args %v, reply %v", ck.me, args, reply)
+					DPrintf("ShardId controller: [%d] Join succeeded with args %v, reply %v", ck.me, args, reply)
 					ck.lastRequest = args.LastRequest // update last request
 					return
 				} else if reply.Err == WrongLeader {
