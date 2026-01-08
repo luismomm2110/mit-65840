@@ -86,12 +86,12 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
-	//isMyShard := kv.isMyShard(args.ShardId)
-	//if !isMyShard {
-	//	reply.Err = ErrWrongGroup
-	//	kv.mu.Unlock()
-	//	return
-	//}
+	isMyShard := kv.isMyShard(args.ShardId)
+	if !isMyShard {
+		reply.Err = ErrWrongGroup
+		kv.mu.Unlock()
+		return
+	}
 	if args.RequestId <= lastRequest {
 		reply.Err = OK
 		reply.Value = kv.kvStore[args.Key]
@@ -136,14 +136,14 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
 	lastRequest := kv.lastRequestForClient[args.ClientId]
-	//myShard := kv.isMyShard(args.ShardId)
-	//if !myShard {
-	//	DPrintf("Server %d gid %d failed putappend  to shard %v",
-	//		kv.me, kv.gid, myShard)
-	//	reply.Err = ErrWrongGroup
-	//	kv.mu.Unlock()
-	//	return
-	//}
+	myShard := kv.isMyShard(args.ShardId)
+	if !myShard {
+		DPrintf("Server %d gid %d failed putappend  to shard %v",
+			kv.me, kv.gid, myShard)
+		reply.Err = ErrWrongGroup
+		kv.mu.Unlock()
+		return
+	}
 	DPrintf("Server %d with gid %d waiting putappend for request %v", kv.me, kv.gid, args)
 	if args.RequestId <= lastRequest {
 		reply.Err = OK
