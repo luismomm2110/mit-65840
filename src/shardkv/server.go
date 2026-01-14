@@ -12,7 +12,7 @@ import "6.5840/raft"
 import "sync"
 import "6.5840/labgob"
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -43,6 +43,8 @@ func (opType OpType) String() string {
 		return "Put"
 	case OpTypeAppend:
 		return "Append"
+	case OpTypeConfig:
+		return "Config"
 	default:
 
 		return "Unknown"
@@ -296,6 +298,131 @@ func (kv *ShardKV) checkConfig() {
 		kv.lastConfig = newConfig
 		kv.mu.Unlock()
 	}
+}
+
+// RPC to move shard
+func (kv *ShardKV) MoveShard(args *MoveShardArgs, reply *MoveShardsReply) {
+	kv.mu.Lock()
+	op := Op{}
+	_, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.mu.Unlock()
+		return
+	}
+	ch, ok := kv.chanByConfigId[args.ConfigId]
+	if !ok {
+		ch = make(chan raft.ApplyMsg)
+		kv.chanByConfigId[args.ConfigId] = ch
+	}
+	//TODO dont know if this is necessary
+	//DPrintf("Server %d waiting get for request %v", kv.me, args)
+	kv.mu.Unlock()
+	<-ch
+	//DPrintf("Server %d received get request %v from channel %v", kv.me, args, c)
+	//DPrintf("Server %d returning value %v for Get request %v", kv.me, reply.Value, args)
+	reply.Err = OK
+}
+
+// need to be locked
+func (kv *ShardKV) changeConfig(currentConfig shardctrler.Config, newConfig shardctrler.Config) {
+
+	// preciso de um RPC move shard
+	//You'll need to provide at-most-once semantics (duplicate detection) for client requests across shard movement.
+
+	//IMPORTANTE AVISO
+	//If one of your RPC handlers includes in its reply a map (e.g. a key/value map) that's part of your server's state, you may get bugs due to races.
+	//The RPC system has to read the map in order to send it to the caller, but it isn't holding a lock that covers the map.
+	//Your server, however, may proceed to modify the same map while the RPC system is reading it. The solution is for the RPC handler to include a copy of the map in the reply.
+	//  If you put a map or a slice in a Raft log entry, and your key/value server subsequently sees the entry on the applyCh and
+	//T saves a reference to the map/slice in your key/value server's state,
+	////T you may have a race. Make a copy of the map/slice, and store the copy in your key/value server's state.
+	////The race is between your key/value server modifying the map/slice and Raft reading it while persisting its log.
+	//
+	//for {
+	//	// PSEUDOCODIGO
+	//	// pego meus shards atuais e que não são mais meus
+	replacedShards := kv.replacedShards(newConfig)
+	gidsToReplacedShards := make(map[int]int, 10)
+	// gids dos shards que preciso mandar
+	for i := range replacedShards {
+		gid := kv.lastConfig.Shards[i]
+		gidsToReplacedShards[i] = gid
+	}
+
+	for _, gid := range gidsToReplacedShards {
+		if servers, ok := newConfig.Groups[gid]; ok {
+			numServers := len(servers)
+			for offset := 0; offset < numServers; offset++ {
+				reply := MoveShardsReply{}
+				args := MoveShardArgs{
+					ConfigId: newConfig.Num,
+				}
+				ok := make(chan bool)
+				offset := offset
+				go func() {
+					srv := kv.make_end(servers[offset])
+					ok <- srv.Call("ShardKV.MoveShard", &args, &reply)
+				}()
+				select {
+				case ok := <-ok:
+					if ok {
+						if reply.Err == OK {
+							panic(reply.Err)
+							DPrintf("Server [%d] got reply %v", kv.me, reply)
+						}
+						if reply.Err == ErrWrongLeader {
+							DPrintf("Server [%d] found another leader in response from request %v server id %v", kv.me, args, offset)
+						}
+					}
+				case <-time.After(20 * time.Millisecond):
+					{
+						DPrintf("Server %d MoveShard to server %d timeout", kv.me, offset)
+						continue
+					}
+				}
+			}
+
+		}
+	}
+}
+
+func (kv *ShardKV) replacedShards(newConfig shardctrler.Config) []int {
+	oldShards := make(map[int]bool, 10)
+	for i, n := range kv.lastConfig.Shards {
+		if n == kv.gid {
+			oldShards[i] = true
+		} else {
+			oldShards[i] = false
+		}
+	}
+
+	currentShards := make(map[int]bool, 10)
+	for i, n := range newConfig.Shards {
+		if n == kv.gid {
+			currentShards[i] = true
+		} else {
+			currentShards[i] = false
+		}
+	}
+
+	DPrintf("Server %d gid %v", kv.me, kv.gid)
+	DPrintf("Server %d current config %v", kv.me, kv.lastConfig)
+	DPrintf("Server %d new config %v", kv.me, newConfig)
+	DPrintf("Server %d oldShards %v", kv.me, oldShards)
+	DPrintf("Server %d currentShards %v \n", kv.me, currentShards)
+
+	var replacedShards []int
+	for i, v := range oldShards {
+		if v {
+			if !currentShards[i] {
+				replacedShards = append(replacedShards, i)
+			}
+		}
+	}
+	DPrintf("Server %d replacedShards %v", kv.me, replacedShards)
+
+	return replacedShards
 }
 
 func (kv *ShardKV) apply() {

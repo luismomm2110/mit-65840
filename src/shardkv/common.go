@@ -53,3 +53,13 @@ type GetReply struct {
 	Err   Err
 	Value string
 }
+
+type MoveShardArgs struct {
+	Err      Err
+	ConfigId int
+	Values   []string
+}
+
+type MoveShardsReply struct {
+	Err Err
+}
