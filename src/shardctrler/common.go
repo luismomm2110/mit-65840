@@ -22,6 +22,8 @@ import (
 // You will need to add fields to the RPC argument structs.
 //
 
+// um servidor tem um GID, fixo, o shard para cada gid muda  e cada gid vai ter um numero de servers (raft)
+
 // The number of shards.
 const NShards = 10
 
@@ -92,7 +94,7 @@ type QueryReply struct {
 	Config      Config
 }
 
-const Debug = false
+const Debug = true
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	// set flag for miliseconds since epoch

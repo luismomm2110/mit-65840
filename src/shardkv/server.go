@@ -27,7 +27,7 @@ const (
 	OpTypeGet OpType = iota
 	OpTypePut
 	OpTypeAppend
-	OpTypePutAppend
+	OpTypeConfig
 )
 
 type Snapshot struct {
@@ -44,6 +44,7 @@ func (opType OpType) String() string {
 	case OpTypeAppend:
 		return "Append"
 	default:
+
 		return "Unknown"
 	}
 }
@@ -59,7 +60,7 @@ type Op struct {
 	ClientId  int64
 
 	// // specific fields for each operation
-
+	ConfigId int
 }
 
 type ShardKV struct {
@@ -77,7 +78,9 @@ type ShardKV struct {
 	// Your definitions here.
 	kvStore                   map[string]string
 	chanByRequestIdByClientId map[int64]map[int64]chan raft.ApplyMsg // ephemeral channels for each requestId by clientId
-	lastRequestForClient      map[int64]int64                        // maps clientId to greatest requestId seen so far that we can deduplicate requests
+	chanByConfigId            map[int]chan raft.ApplyMsg
+	lastRequestForClient      map[int64]int64 // maps clientId to greatest requestId seen so far that we can deduplicate requests
+	lastConfigRequest         map[int64]int64 // todo maybe something related to config changes
 	lastPersistedIndex        int
 	lastConfig                shardctrler.Config
 }
@@ -244,6 +247,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.ctrlers = ctrlers
 	kv.kvStore = make(map[string]string)
 	kv.chanByRequestIdByClientId = make(map[int64]map[int64]chan raft.ApplyMsg)
+	kv.chanByConfigId = make(map[int]chan raft.ApplyMsg)
 	kv.lastRequestForClient = make(map[int64]int64)
 	kv.lastPersistedIndex = 0
 	// Your initialization code here.
@@ -256,6 +260,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	go kv.apply()
 	go kv.checkConfig()
+	DPrintf("kv.startServer %d starting with gid %d \n", kv.me, kv.gid)
 
 	return kv
 }
@@ -265,11 +270,29 @@ func (kv *ShardKV) checkConfig() {
 		if kv.killed() {
 			return
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		DPrintf("Server %d checkConfig start", kv.me)
-		DPrintf("Server %d checkConfig ends", kv.me)
+		//DPrintf("Server %d checkConfig ends", kv.me)
 		newConfig := kv.mck.Query(-1)
 		kv.mu.Lock()
+		op := Op{
+			Key:       "",
+			OpType:    OpTypeConfig,
+			RequestId: -1,
+			ClientId:  -1,
+			ConfigId:  newConfig.Num,
+		}
+		_, _, isLeader := kv.rf.Start(op)
+		if !isLeader {
+			kv.mu.Unlock()
+			continue
+		}
+		if kv.lastConfig.Num >= newConfig.Num {
+			kv.mu.Unlock()
+			continue
+		}
+		DPrintf("Server %d checkConfig got config %v", kv.me, newConfig)
+		kv.changeConfig(kv.lastConfig, newConfig)
 		kv.lastConfig = newConfig
 		kv.mu.Unlock()
 	}
@@ -298,7 +321,7 @@ func (kv *ShardKV) apply() {
 			continue
 		}
 		if op.OpType == OpTypePut {
-			DPrintf("Server %d got put request %v", kv.me, msg.Command)
+			//DPrintf("Server %d got put request %v", kv.me, msg.Command)
 			kv.kvStore[op.Key] = op.Value
 		} else if op.OpType == OpTypeAppend {
 			kv.kvStore[op.Key] += op.Value
@@ -349,8 +372,6 @@ func (kv *ShardKV) restoreFromSnapshot(data []byte) {
 	}
 	kv.kvStore = snapshot.Values
 	kv.lastRequestForClient = snapshot.LastRequestForClient
-	DPrintf("Server %d restoreFromSnapshot with last request for client %v", kv.me, snapshot.LastRequestForClient)
-	DPrintf("Server %d restoreFromSnapshot with values %v", kv.me, snapshot.Values)
 }
 
 func (kv *ShardKV) killed() bool {

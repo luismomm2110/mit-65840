@@ -182,11 +182,13 @@ func TestJoinLeave5B(t *testing.T) {
 
 	ck := cfg.makeClient(cfg.ctl)
 
+	// adiciona um gid
 	cfg.join(0)
 
 	n := 10
 	ka := make([]string, n)
 	va := make([]string, n)
+	// adiciona 10 chaves e valores
 	for i := 0; i < n; i++ {
 		ka[i] = strconv.Itoa(i) // ensure multiple shards
 		va[i] = randstring(5)
@@ -196,6 +198,7 @@ func TestJoinLeave5B(t *testing.T) {
 		check(t, ck, ka[i], va[i])
 	}
 
+	// outro GID entra, deve distribuir
 	cfg.join(1)
 
 	for i := 0; i < n; i++ {
@@ -204,6 +207,7 @@ func TestJoinLeave5B(t *testing.T) {
 		ck.Append(ka[i], x)
 		va[i] += x
 	}
+	DPrintf("Done with join\n")
 
 	cfg.leave(0)
 

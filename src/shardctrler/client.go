@@ -83,7 +83,6 @@ func (ck *Clerk) Query(num int) Config {
 }
 
 func (ck *Clerk) Join(servers map[int][]string) {
-	// todo retry
 	args := &JoinArgs{}
 	// Your code here.
 	args.Servers = servers
@@ -91,6 +90,11 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args.ClientId = ck.me
 	numServers := len(ck.servers)
 	start := ck.leader
+	//DPrintf("[%d] Join called with servers %v", ck.me, servers)
+	//if ck.lastRequest > 0 {
+	//	lastConfig := ck.Query(-1)
+	//	DPrintf("[%d] current config is lastConfig %v", ck.me, lastConfig)
+	//}
 
 	for {
 		for offset := 0; offset < numServers; offset++ {
@@ -98,7 +102,6 @@ func (ck *Clerk) Join(servers map[int][]string) {
 			var reply JoinReply
 			ok := make(chan bool)
 			// try each known server.
-			DPrintf("[%d] Join called with args %v, reply %v to server %d", ck.me, args, reply, server)
 			go func() {
 				ok <- ck.servers[server].Call("ShardCtrler.Join", args, &reply)
 			}()
