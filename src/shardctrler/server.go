@@ -63,7 +63,6 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	if args.LastRequest <= lastRequest {
 		reply.WrongLeader = false
 		reply.Err = OK
-		DPrintf("[%d] received join command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastRequestForClient[args.ClientId])
 		sc.mu.Unlock()
 		return
 	}
@@ -93,6 +92,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	sc.mu.Unlock()
 	<-c
 	sc.mu.Lock()
+	DPrintf("ShardCtrl: [%d] Join command after channel with args %v", sc.me, args)
 	defer sc.mu.Unlock()
 	reply.WrongLeader = false
 	sc.lastRequestForClient[args.ClientId] = args.LastRequest
@@ -107,11 +107,9 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	if args.LastRequest <= lastRequest {
 		reply.WrongLeader = false
 		reply.Err = OK
-		DPrintf("[%d] received leave command with lastRequest %d <= lastCompletedRequest %d, ignoring", sc.me, args.LastRequest, sc.lastRequestForClient[args.ClientId])
 		return
 	}
 	sc.mu.Unlock()
-	DPrintf("[%d] leave command with args %v", sc.me, args)
 	op := Op{
 		Type:      LeaveOp,
 		RequestId: args.LastRequest,
@@ -135,12 +133,11 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 		c = make(chan raft.ApplyMsg, 1)
 		clientChans[args.LastRequest] = c
 	}
-	DPrintf("[%d] Leave command with args %v", sc.me, args)
 	sc.mu.Unlock()
 	<-c
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	DPrintf("[%d] Leave command after channel with args %v", sc.me, args)
+	DPrintf("ShardCtrl: [%d] Leave command after channel with args %v", sc.me, args)
 	sc.lastRequestForClient[args.ClientId] = args.LastRequest
 	reply.WrongLeader = false
 	reply.Err = OK
@@ -248,12 +245,12 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		config := sc.configs[len(sc.configs)-1]
 		reply.WrongLeader = false
 		reply.Config = config
+		DPrintf("Shard controler [%d] Query command applied with num config %d", sc.me, config.Num)
 		return
 	}
 	config := sc.configs[args.Num]
 	reply.WrongLeader = false
 	reply.Config = config
-	DPrintf("[%d] Query command applied with args %v response %v", sc.me, args, reply.Config)
 }
 
 // the tester calls Kill() when a ShardCtrler instance won't

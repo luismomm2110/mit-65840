@@ -63,6 +63,7 @@ type Op struct {
 
 	// // specific fields for each operation
 	ConfigId int
+	KeyValue map[string]string // values in config
 }
 
 type ShardKV struct {
@@ -97,6 +98,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		kv.mu.Unlock()
 		return
 	}
+	DPrintf("Server %d gid %v get request %v", kv.me, kv.gid, args.RequestId)
 	if args.RequestId <= lastRequest {
 		reply.Err = OK
 		reply.Value = kv.kvStore[args.Key]
@@ -208,6 +210,7 @@ func (kv *ShardKV) isMyShard(shardId int) bool {
 func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+
 }
 
 // servers[] contains the ports of the servers in this group.
@@ -293,8 +296,8 @@ func (kv *ShardKV) checkConfig() {
 			kv.mu.Unlock()
 			continue
 		}
-		DPrintf("Server %d checkConfig got config %v", kv.me, newConfig)
-		kv.changeConfig(kv.lastConfig, newConfig)
+		DPrintf("Server %d gid %d checkConfig got config %v with num %d", kv.me, kv.gid, newConfig, newConfig.Num)
+		kv.changeConfig(newConfig)
 		kv.lastConfig = newConfig
 		kv.mu.Unlock()
 	}
@@ -303,34 +306,31 @@ func (kv *ShardKV) checkConfig() {
 // RPC to move shard
 func (kv *ShardKV) MoveShard(args *MoveShardArgs, reply *MoveShardsReply) {
 	kv.mu.Lock()
-	op := Op{}
+	op := Op{
+		ConfigId: args.ConfigId,
+		KeyValue: args.Values,
+		OpType:   OpTypeConfig,
+	}
+	DPrintf("Server %d gid %d  config %d move shard with values %v", kv.me, kv.gid, args.ConfigId, args.Values)
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		kv.mu.Unlock()
 		return
 	}
-	ch, ok := kv.chanByConfigId[args.ConfigId]
-	if !ok {
-		ch = make(chan raft.ApplyMsg)
-		kv.chanByConfigId[args.ConfigId] = ch
-	}
-	//TODO dont know if this is necessary
-	//DPrintf("Server %d waiting get for request %v", kv.me, args)
+	DPrintf("Server %d gid %d finished move shard %d with values %v", kv.me, kv.gid, args.ConfigId, args.Values)
 	kv.mu.Unlock()
-	<-ch
 	//DPrintf("Server %d received get request %v from channel %v", kv.me, args, c)
 	//DPrintf("Server %d returning value %v for Get request %v", kv.me, reply.Value, args)
 	reply.Err = OK
 }
 
 // need to be locked
-func (kv *ShardKV) changeConfig(currentConfig shardctrler.Config, newConfig shardctrler.Config) {
-
-	// preciso de um RPC move shard
-	//You'll need to provide at-most-once semantics (duplicate detection) for client requests across shard movement.
+func (kv *ShardKV) changeConfig(newConfig shardctrler.Config) {
 
 	//IMPORTANTE AVISO
+	//You'll need to provide at-most-once semantics (duplicate detection) for client requests across shard movement.
+
 	//If one of your RPC handlers includes in its reply a map (e.g. a key/value map) that's part of your server's state, you may get bugs due to races.
 	//The RPC system has to read the map in order to send it to the caller, but it isn't holding a lock that covers the map.
 	//Your server, however, may proceed to modify the same map while the RPC system is reading it. The solution is for the RPC handler to include a copy of the map in the reply.
@@ -342,37 +342,70 @@ func (kv *ShardKV) changeConfig(currentConfig shardctrler.Config, newConfig shar
 	//for {
 	//	// PSEUDOCODIGO
 	//	// pego meus shards atuais e que não são mais meus
-	replacedShards := kv.replacedShards(newConfig)
-	gidsToReplacedShards := make(map[int]int, 10)
-	// gids dos shards que preciso mandar
-	for i := range replacedShards {
-		gid := kv.lastConfig.Shards[i]
-		gidsToReplacedShards[i] = gid
+	// todo aqui não preciso ser o lider?
+	if newConfig.Num == 1 {
+		return
 	}
+	replacedShards := kv.replacedShards(newConfig)
+	if len(replacedShards) == 0 {
+		return
+	}
+	gidsToReplacedShards := make(map[int][]int)
+	// gids dos shards que preciso mandar
+	for _, shard := range replacedShards {
+		gid := newConfig.Shards[shard]
+		DPrintf("server %d gid %d found gid %d for shard %d\n", kv.me, kv.gid, gid, shard)
+		_, ok := gidsToReplacedShards[gid]
+		if !ok {
+			gidsToReplacedShards[gid] = []int{shard}
+		} else {
+			gidsToReplacedShards[gid] = append(gidsToReplacedShards[gid], shard)
+		}
+	}
+	DPrintf("Server %d gid %d when changing config %d has kvValue %v", kv.me, kv.gid, newConfig.Num, kv.kvStore)
+	DPrintf("Server %d gid %d change config got config %v and gidsToreplaceshard %v", kv.me, kv.gid, newConfig, gidsToReplacedShards)
 
-	for _, gid := range gidsToReplacedShards {
+	// todo maybe a goroutine here ? check how raft send
+
+	for gid, shards := range gidsToReplacedShards {
+		if gid == kv.gid {
+			continue
+		}
 		if servers, ok := newConfig.Groups[gid]; ok {
 			numServers := len(servers)
 			for offset := 0; offset < numServers; offset++ {
+				mapToSend := make(map[string]string)
+				for k, v := range kv.kvStore {
+					shard := key2shard(k)
+					DPrintf("Reconfiguration: server %d gid %d sending key %v value %v with shard %d\n", kv.me, kv.gid, k, v, shard)
+					// todo aqui tem erro. precisa estar apenas na config atual ou seja pegar das key
+					for _, s := range shards {
+						if s == shard {
+							mapToSend[k] = v
+						}
+					}
+				}
 				reply := MoveShardsReply{}
 				args := MoveShardArgs{
 					ConfigId: newConfig.Num,
+					Values:   mapToSend,
 				}
 				ok := make(chan bool)
 				offset := offset
 				go func() {
 					srv := kv.make_end(servers[offset])
+					DPrintf("Server %d gid %d move shard with values %v and config id %d sending to %d", kv.me, kv.gid, args.Values, args.ConfigId, offset)
 					ok <- srv.Call("ShardKV.MoveShard", &args, &reply)
 				}()
 				select {
 				case ok := <-ok:
+					DPrintf("Server %d got reply %v", kv.me, reply)
 					if ok {
 						if reply.Err == OK {
-							panic(reply.Err)
-							DPrintf("Server [%d] got reply %v", kv.me, reply)
+							DPrintf("Server [%d] gid %d completed move shard %d to %d", kv.me, kv.gid, args.ConfigId, offset)
 						}
 						if reply.Err == ErrWrongLeader {
-							DPrintf("Server [%d] found another leader in response from request %v server id %v", kv.me, args, offset)
+							DPrintf("Server [%d] gid %d found another leader in response from moveshard %v server id %v", kv.me, kv.gid, args.ConfigId, offset)
 						}
 					}
 				case <-time.After(20 * time.Millisecond):
@@ -406,12 +439,6 @@ func (kv *ShardKV) replacedShards(newConfig shardctrler.Config) []int {
 		}
 	}
 
-	DPrintf("Server %d gid %v", kv.me, kv.gid)
-	DPrintf("Server %d current config %v", kv.me, kv.lastConfig)
-	DPrintf("Server %d new config %v", kv.me, newConfig)
-	DPrintf("Server %d oldShards %v", kv.me, oldShards)
-	DPrintf("Server %d currentShards %v \n", kv.me, currentShards)
-
 	var replacedShards []int
 	for i, v := range oldShards {
 		if v {
@@ -420,7 +447,7 @@ func (kv *ShardKV) replacedShards(newConfig shardctrler.Config) []int {
 			}
 		}
 	}
-	DPrintf("Server %d replacedShards %v", kv.me, replacedShards)
+	DPrintf("Server %d gid %d replacedShards %v and config id %d", kv.me, kv.gid, replacedShards, newConfig.Num)
 
 	return replacedShards
 }
@@ -441,8 +468,24 @@ func (kv *ShardKV) apply() {
 		}
 		kv.mu.Lock()
 		op := msg.Command.(Op)
+		if op.OpType == OpTypeConfig {
+			receivedKvs := op.KeyValue
+			if len(receivedKvs) == 0 {
+				kv.mu.Unlock()
+				continue
+			}
+			DPrintf("Server %d gid %d receivedKV %v", kv.me, kv.gid, receivedKvs)
+			DPrintf("Server %d gid %d kv store before resharding %v", kv.me, kv.gid, kv.kvStore)
+			for k, v := range receivedKvs {
+				kv.kvStore[k] = v
+			}
+			DPrintf("Server %d gid %d kv store after resharding %v config id %d \n", kv.me, kv.gid, kv.kvStore, op.ConfigId)
+			kv.mu.Unlock()
+			continue
+		}
 		clientId := op.ClientId
 		lastRequest := kv.lastRequestForClient[clientId]
+		DPrintf("Server %d gid %v lastRequest %v of type %d", kv.me, kv.gid, op.RequestId, op.OpType)
 		if op.RequestId <= lastRequest {
 			kv.mu.Unlock()
 			continue

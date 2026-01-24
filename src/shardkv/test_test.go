@@ -207,7 +207,6 @@ func TestJoinLeave5B(t *testing.T) {
 		ck.Append(ka[i], x)
 		va[i] += x
 	}
-	DPrintf("Done with join\n")
 
 	cfg.leave(0)
 
@@ -322,15 +321,28 @@ func TestMissChange5B(t *testing.T) {
 	}
 
 	cfg.join(1)
+	for i := 0; i < n; i++ {
+		check(t, ck, ka[i], va[i])
+	}
 
 	cfg.ShutdownServer(0, 0)
 	cfg.ShutdownServer(1, 0)
 	cfg.ShutdownServer(2, 0)
+	for i := 0; i < n; i++ {
+		check(t, ck, ka[i], va[i])
+	}
 
 	cfg.join(2)
 	cfg.leave(1)
 	cfg.leave(0)
+	for i := 0; i < n; i++ {
+		check(t, ck, ka[i], va[i])
+	}
 
+	// ate aqui teve join 0, 1, desligou o primeiro de 0, o primeiro de 1 e o primeiro de 2
+	// dai join 2, depois leave 1, depois leave 0
+	// então só tem o 2
+	// esta na config 5
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 		x := randstring(20)

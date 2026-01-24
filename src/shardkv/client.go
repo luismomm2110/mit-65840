@@ -93,7 +93,7 @@ func (ck *Clerk) Get(key string) string {
 				serverIndex := (start + offset) % numServers
 				reply := GetReply{}
 				ok := make(chan bool)
-				DPrintf("Client %d SENDING GET %v to server %v", ck.me, args, serverIndex)
+				DPrintf("Client %d SENDING GET %v to server %v gid %d", ck.me, args, serverIndex, gid)
 				go func() {
 					srv := ck.make_end(servers[serverIndex])
 					ok <- srv.Call("ShardKV.Get", &args, &reply)
@@ -103,7 +103,7 @@ func (ck *Clerk) Get(key string) string {
 					{
 						if reply.Err == OK {
 							ck.leader = serverIndex
-							DPrintf("Client %d GET REQUESTID %d COMPLETED and leader is %v", ck.me, args.RequestId, serverIndex)
+							DPrintf("Client %d GET REQUESTID %d COMPLETED and leader is %v for gid %d", ck.me, args.RequestId, serverIndex, gid)
 							return reply.Value
 						} else if reply.Err == ErrWrongLeader {
 							//DPrintf("found another leader in response from request %v server id %v", args, serverIndex)
@@ -151,6 +151,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			numServers := len(servers)
 			start := ck.leader
 			for offset := 0; offset < numServers; offset++ {
+				DPrintf("Client %d sending put append request key: %v value: %v to server %v gid %d and shard is %v", ck.me, args.Key, args.Value, servers[offset], gid, shard)
 				serverIndex := (start + offset) % numServers
 				reply := PutAppendReply{}
 				ok := make(chan bool)
