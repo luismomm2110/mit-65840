@@ -55,9 +55,10 @@ type GetReply struct {
 }
 
 type MoveShardArgs struct {
-	Err      Err
-	ConfigId int
-	Values   map[string]string
+	Err                  Err
+	ConfigId             int
+	Values               map[string]string
+	LastRequestForClient map[int64]int64
 }
 
 type MoveShardsReply struct {

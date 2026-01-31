@@ -239,6 +239,7 @@ func TestSnapshot5B(t *testing.T) {
 	ck := cfg.makeClient(cfg.ctl)
 
 	cfg.join(0)
+	DPrintf("after first join")
 
 	n := 30
 	ka := make([]string, n)
@@ -253,8 +254,11 @@ func TestSnapshot5B(t *testing.T) {
 	}
 
 	cfg.join(1)
+	DPrintf("after second join")
 	cfg.join(2)
+	DPrintf("after third join")
 	cfg.leave(0)
+	DPrintf("after first leave")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -264,7 +268,9 @@ func TestSnapshot5B(t *testing.T) {
 	}
 
 	cfg.leave(1)
+	DPrintf("after second leave")
 	cfg.join(0)
+	DPrintf("after gid 0 joins again")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -273,15 +279,18 @@ func TestSnapshot5B(t *testing.T) {
 		va[i] += x
 	}
 
+	DPrintf("before first sleep")
 	time.Sleep(1 * time.Second)
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 	}
+	DPrintf("after first sleep")
 
 	time.Sleep(1 * time.Second)
 
 	cfg.checklogs()
+	DPrintf("after second sleep")
 
 	cfg.ShutdownGroup(0)
 	cfg.ShutdownGroup(1)

@@ -12,7 +12,7 @@ import "6.5840/raft"
 import "sync"
 import "6.5840/labgob"
 
-const Debug = true
+const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -83,7 +83,6 @@ type ShardKV struct {
 	chanByRequestIdByClientId map[int64]map[int64]chan raft.ApplyMsg // ephemeral channels for each requestId by clientId
 	chanByConfigId            map[int]chan raft.ApplyMsg
 	lastRequestForClient      map[int64]int64 // maps clientId to greatest requestId seen so far that we can deduplicate requests
-	lastConfigRequest         map[int64]int64 // todo maybe something related to config changes
 	lastPersistedIndex        int
 	lastConfig                shardctrler.Config
 }
@@ -135,7 +134,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	reply.Value = kv.kvStore[args.Key]
-	DPrintf("Server %d returning value %v for Get request %v", kv.me, reply.Value, args)
+	DPrintf("Server %d gid %d returning value %v for Get request %v", kv.me, kv.gid, reply.Value, args.RequestId)
 	reply.Err = OK
 }
 
@@ -362,6 +361,7 @@ func (kv *ShardKV) changeConfig(newConfig shardctrler.Config) {
 			gidsToReplacedShards[gid] = append(gidsToReplacedShards[gid], shard)
 		}
 	}
+
 	DPrintf("Server %d gid %d when changing config %d has kvValue %v", kv.me, kv.gid, newConfig.Num, kv.kvStore)
 	DPrintf("Server %d gid %d change config got config %v and gidsToreplaceshard %v", kv.me, kv.gid, newConfig, gidsToReplacedShards)
 
@@ -385,10 +385,12 @@ func (kv *ShardKV) changeConfig(newConfig shardctrler.Config) {
 						}
 					}
 				}
+				// last request before reshard
 				reply := MoveShardsReply{}
 				args := MoveShardArgs{
-					ConfigId: newConfig.Num,
-					Values:   mapToSend,
+					ConfigId:             newConfig.Num,
+					Values:               mapToSend,
+					LastRequestForClient: kv.lastRequestForClient,
 				}
 				ok := make(chan bool)
 				offset := offset
@@ -459,7 +461,7 @@ func (kv *ShardKV) apply() {
 		}
 
 		msg := <-kv.applyCh
-		DPrintf("Server %d got command %v", kv.me, msg.Command)
+		DPrintf("Server %d gid %d got command %v with index %d and request id %d", kv.me, kv.gid, msg.Command, msg.CommandIndex, msg.CommandIndex)
 		if !msg.CommandValid {
 			kv.mu.Lock()
 			kv.restoreFromSnapshot(msg.Snapshot)
@@ -468,6 +470,13 @@ func (kv *ShardKV) apply() {
 		}
 		kv.mu.Lock()
 		op := msg.Command.(Op)
+		clientId := op.ClientId
+		lastRequest := kv.lastRequestForClient[clientId]
+		DPrintf("Server %d gid %v lastRequest %v of type %d", kv.me, kv.gid, op.RequestId, op.OpType)
+		if op.RequestId <= lastRequest {
+			kv.mu.Unlock()
+			continue
+		}
 		if op.OpType == OpTypeConfig {
 			receivedKvs := op.KeyValue
 			if len(receivedKvs) == 0 {
@@ -479,14 +488,8 @@ func (kv *ShardKV) apply() {
 			for k, v := range receivedKvs {
 				kv.kvStore[k] = v
 			}
-			DPrintf("Server %d gid %d kv store after resharding %v config id %d \n", kv.me, kv.gid, kv.kvStore, op.ConfigId)
-			kv.mu.Unlock()
-			continue
-		}
-		clientId := op.ClientId
-		lastRequest := kv.lastRequestForClient[clientId]
-		DPrintf("Server %d gid %v lastRequest %v of type %d", kv.me, kv.gid, op.RequestId, op.OpType)
-		if op.RequestId <= lastRequest {
+			DPrintf("Server %d gid %d kv store after resharding %v config id %d and command index %d \n", kv.me, kv.gid, kv.kvStore, op.ConfigId, msg.CommandIndex)
+			kv.lastRequestForClient[clientId] = op.RequestId
 			kv.mu.Unlock()
 			continue
 		}
@@ -496,6 +499,8 @@ func (kv *ShardKV) apply() {
 		} else if op.OpType == OpTypeAppend {
 			kv.kvStore[op.Key] += op.Value
 		}
+		DPrintf("server %d gid %d kvvalue after apllying command %v in key %v is %v and command index %d",
+			kv.me, kv.gid, op.RequestId, op.Key, kv.kvStore[op.Key], msg.CommandIndex)
 		kv.lastRequestForClient[clientId] = op.RequestId
 		c, exists := kv.chanByRequestIdByClientId[op.ClientId][op.RequestId]
 		if exists {
@@ -542,6 +547,7 @@ func (kv *ShardKV) restoreFromSnapshot(data []byte) {
 	}
 	kv.kvStore = snapshot.Values
 	kv.lastRequestForClient = snapshot.LastRequestForClient
+	DPrintf("After snapshot %v\n", kv.kvStore)
 }
 
 func (kv *ShardKV) killed() bool {
