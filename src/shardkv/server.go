@@ -1,12 +1,13 @@
 package shardkv
 
 import (
-	"6.5840/labrpc"
-	"6.5840/shardctrler"
 	"bytes"
 	"log"
 	"sync/atomic"
 	"time"
+
+	"6.5840/labrpc"
+	"6.5840/shardctrler"
 )
 import "6.5840/raft"
 import "sync"
@@ -31,8 +32,8 @@ const (
 )
 
 type Snapshot struct {
-	Values               map[string]string
-	LastRequestForClient map[int64]int64
+	Values                      map[string]string
+	LastRequestForClientInShard map[int]map[int64]int64
 }
 
 func (opType OpType) String() string {
@@ -62,8 +63,9 @@ type Op struct {
 	ClientId  int64
 
 	// // specific fields for each operation
-	ConfigId int
-	KeyValue map[string]string // values in config
+	ConfigId                    int
+	KeyValue                    map[string]string       // values in config
+	LastRequestForClientInShard map[int]map[int64]int64 // for shard transfer
 }
 
 type ShardKV struct {
@@ -79,23 +81,35 @@ type ShardKV struct {
 	dead         int32
 
 	// Your definitions here.
-	kvStore                   map[string]string
-	chanByRequestIdByClientId map[int64]map[int64]chan raft.ApplyMsg // ephemeral channels for each requestId by clientId
-	chanByConfigId            map[int]chan raft.ApplyMsg
-	lastRequestForClient      map[int64]int64 // maps clientId to greatest requestId seen so far that we can deduplicate requests
-	lastPersistedIndex        int
-	lastConfig                shardctrler.Config
+	kvStore                     map[string]string
+	chanByRequestIdByClientId   map[int64]map[int64]chan raft.ApplyMsg // ephemeral channels for each requestId by clientId
+	chanByConfigId              map[int]chan raft.ApplyMsg
+	lastRequestForClientInShard map[int]map[int64]int64 // maps shardId -> clientId -> greatest requestId seen so far
+	lastPersistedIndex          int
+	lastConfig                  shardctrler.Config
+
+	shardReady   [shardctrler.NShards]bool
+	shardReadyCh [shardctrler.NShards]chan struct{}
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	kv.mu.Lock()
-	lastRequest := kv.lastRequestForClient[args.ClientId]
-	isMyShard := kv.isMyShard(args.ShardId)
-	if !isMyShard {
+	if kv.isMyShard(args.ShardId) && !kv.shardReady[args.ShardId] {
+		ch := kv.shardReadyCh[args.ShardId]
+		kv.mu.Unlock()
+		<-ch
+		kv.mu.Lock()
+	}
+	if !kv.isMyShard(args.ShardId) {
 		reply.Err = ErrWrongGroup
 		kv.mu.Unlock()
+		DPrintf("server %d gid [%d] Get failed for %d", kv.me, kv.gid, args.ShardId)
 		return
+	}
+	var lastRequest int64
+	if shardMap, ok := kv.lastRequestForClientInShard[args.ShardId]; ok {
+		lastRequest = shardMap[args.ClientId]
 	}
 	DPrintf("Server %d gid %v get request %v", kv.me, kv.gid, args.RequestId)
 	if args.RequestId <= lastRequest {
@@ -141,14 +155,21 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	kv.mu.Lock()
-	lastRequest := kv.lastRequestForClient[args.ClientId]
-	myShard := kv.isMyShard(args.ShardId)
-	if !myShard {
-		DPrintf("Server %d gid %d failed putappend  to shard %v",
-			kv.me, kv.gid, myShard)
+	if kv.isMyShard(args.ShardId) && !kv.shardReady[args.ShardId] {
+		ch := kv.shardReadyCh[args.ShardId]
+		kv.mu.Unlock()
+		<-ch
+		kv.mu.Lock()
+	}
+	if !kv.isMyShard(args.ShardId) {
+		DPrintf("server %d gid [%d] PutAppend failed for %d", kv.me, kv.gid, args.ShardId)
 		reply.Err = ErrWrongGroup
 		kv.mu.Unlock()
 		return
+	}
+	var lastRequest int64
+	if shardMap, ok := kv.lastRequestForClientInShard[args.ShardId]; ok {
+		lastRequest = shardMap[args.ClientId]
 	}
 	DPrintf("Server %d with gid %d waiting putappend for request %v", kv.me, kv.gid, args)
 	if args.RequestId <= lastRequest {
@@ -252,9 +273,12 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.kvStore = make(map[string]string)
 	kv.chanByRequestIdByClientId = make(map[int64]map[int64]chan raft.ApplyMsg)
 	kv.chanByConfigId = make(map[int]chan raft.ApplyMsg)
-	kv.lastRequestForClient = make(map[int64]int64)
+	kv.lastRequestForClientInShard = make(map[int]map[int64]int64)
 	kv.lastPersistedIndex = 0
-	// Your initialization code here.
+	for i := 0; i < shardctrler.NShards; i++ {
+		kv.shardReady[i] = true
+		// Channel starts closed (nil reads block forever, but we check shardReady first)
+	}
 
 	// Use something like this to talk to the shardctrler:
 	kv.mck = shardctrler.MakeClerk(kv.ctrlers)
@@ -275,7 +299,6 @@ func (kv *ShardKV) checkConfig() {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
-		DPrintf("Server %d checkConfig start", kv.me)
 		//DPrintf("Server %d checkConfig ends", kv.me)
 		newConfig := kv.mck.Query(-1)
 		kv.mu.Lock()
@@ -296,6 +319,18 @@ func (kv *ShardKV) checkConfig() {
 			continue
 		}
 		DPrintf("Server %d gid %d checkConfig got config %v with num %d", kv.me, kv.gid, newConfig, newConfig.Num)
+		if newConfig.Num == 1 {
+			// First config: all shards are ready, no data to transfer
+			kv.lastConfig = newConfig
+			kv.mu.Unlock()
+			continue
+		}
+		gained, _ := kv.shardChanges(newConfig)
+		for _, shard := range gained {
+			kv.shardReady[shard] = false
+			kv.shardReadyCh[shard] = make(chan struct{})
+			DPrintf("Server %d gid %d blocking shard %d (gained, waiting for data)", kv.me, kv.gid, shard)
+		}
 		kv.changeConfig(newConfig)
 		kv.lastConfig = newConfig
 		kv.mu.Unlock()
@@ -306,9 +341,10 @@ func (kv *ShardKV) checkConfig() {
 func (kv *ShardKV) MoveShard(args *MoveShardArgs, reply *MoveShardsReply) {
 	kv.mu.Lock()
 	op := Op{
-		ConfigId: args.ConfigId,
-		KeyValue: args.Values,
-		OpType:   OpTypeConfig,
+		ConfigId:                    args.ConfigId,
+		KeyValue:                    args.Values,
+		OpType:                      OpTypeConfig,
+		LastRequestForClientInShard: args.LastRequestForClientInShard,
 	}
 	DPrintf("Server %d gid %d  config %d move shard with values %v", kv.me, kv.gid, args.ConfigId, args.Values)
 	_, _, isLeader := kv.rf.Start(op)
@@ -385,12 +421,22 @@ func (kv *ShardKV) changeConfig(newConfig shardctrler.Config) {
 						}
 					}
 				}
+				// Build lastRequestForClientInShard only for shards being transferred
+				lastRequestToSend := make(map[int]map[int64]int64)
+				for _, s := range shards {
+					if clientMap, ok := kv.lastRequestForClientInShard[s]; ok {
+						lastRequestToSend[s] = make(map[int64]int64)
+						for clientId, reqId := range clientMap {
+							lastRequestToSend[s][clientId] = reqId
+						}
+					}
+				}
 				// last request before reshard
 				reply := MoveShardsReply{}
 				args := MoveShardArgs{
-					ConfigId:             newConfig.Num,
-					Values:               mapToSend,
-					LastRequestForClient: kv.lastRequestForClient,
+					ConfigId:                    newConfig.Num,
+					Values:                      mapToSend,
+					LastRequestForClientInShard: lastRequestToSend,
 				}
 				ok := make(chan bool)
 				offset := offset
@@ -420,6 +466,21 @@ func (kv *ShardKV) changeConfig(newConfig shardctrler.Config) {
 
 		}
 	}
+}
+
+// shardChanges returns which shards were gained and which were lost
+// comparing the current config with newConfig.
+func (kv *ShardKV) shardChanges(newConfig shardctrler.Config) (gained []int, lost []int) {
+	for i := 0; i < len(newConfig.Shards); i++ {
+		oldMine := kv.lastConfig.Shards[i] == kv.gid
+		newMine := newConfig.Shards[i] == kv.gid
+		if !oldMine && newMine {
+			gained = append(gained, i)
+		} else if oldMine && !newMine {
+			lost = append(lost, i)
+		}
+	}
+	return
 }
 
 func (kv *ShardKV) replacedShards(newConfig shardctrler.Config) []int {
@@ -471,25 +532,46 @@ func (kv *ShardKV) apply() {
 		kv.mu.Lock()
 		op := msg.Command.(Op)
 		clientId := op.ClientId
-		lastRequest := kv.lastRequestForClient[clientId]
-		DPrintf("Server %d gid %v lastRequest %v of type %d", kv.me, kv.gid, op.RequestId, op.OpType)
-		if op.RequestId <= lastRequest {
-			kv.mu.Unlock()
-			continue
-		}
+		DPrintf("Server %d gid %v lastRequest %v of type %v", kv.me, kv.gid, op.RequestId, op.OpType)
 		if op.OpType == OpTypeConfig {
 			receivedKvs := op.KeyValue
-			if len(receivedKvs) == 0 {
-				kv.mu.Unlock()
-				continue
-			}
+			DPrintf("Server %d gid %v applying config num %d with values %v", kv.me, kv.gid, op.ConfigId, receivedKvs)
 			DPrintf("Server %d gid %d receivedKV %v", kv.me, kv.gid, receivedKvs)
 			DPrintf("Server %d gid %d kv store before resharding %v", kv.me, kv.gid, kv.kvStore)
 			for k, v := range receivedKvs {
 				kv.kvStore[k] = v
 			}
+			// Apply lastRequestForClientInShard from the transfer
+			for shardId, clientMap := range op.LastRequestForClientInShard {
+				if kv.lastRequestForClientInShard[shardId] == nil {
+					kv.lastRequestForClientInShard[shardId] = make(map[int64]int64)
+				}
+				for cId, reqId := range clientMap {
+					if reqId > kv.lastRequestForClientInShard[shardId][cId] {
+						kv.lastRequestForClientInShard[shardId][cId] = reqId
+					}
+				}
+			}
+			// Unblock shards that received data
+			for k := range receivedKvs {
+				shard := key2shard(k)
+				if !kv.shardReady[shard] {
+					kv.shardReady[shard] = true
+					close(kv.shardReadyCh[shard])
+					DPrintf("Server %d gid %d unblocking shard %d (data received)", kv.me, kv.gid, shard)
+				}
+			}
 			DPrintf("Server %d gid %d kv store after resharding %v config id %d and command index %d \n", kv.me, kv.gid, kv.kvStore, op.ConfigId, msg.CommandIndex)
-			kv.lastRequestForClient[clientId] = op.RequestId
+			kv.mu.Unlock()
+			continue
+		}
+		// For normal operations, get lastRequest from the shard
+		shard := key2shard(op.Key)
+		var lastRequest int64
+		if shardMap, ok := kv.lastRequestForClientInShard[shard]; ok {
+			lastRequest = shardMap[clientId]
+		}
+		if op.RequestId <= lastRequest {
 			kv.mu.Unlock()
 			continue
 		}
@@ -501,7 +583,11 @@ func (kv *ShardKV) apply() {
 		}
 		DPrintf("server %d gid %d kvvalue after apllying command %v in key %v is %v and command index %d",
 			kv.me, kv.gid, op.RequestId, op.Key, kv.kvStore[op.Key], msg.CommandIndex)
-		kv.lastRequestForClient[clientId] = op.RequestId
+		// Update lastRequestForClientInShard
+		if kv.lastRequestForClientInShard[shard] == nil {
+			kv.lastRequestForClientInShard[shard] = make(map[int64]int64)
+		}
+		kv.lastRequestForClientInShard[shard][clientId] = op.RequestId
 		c, exists := kv.chanByRequestIdByClientId[op.ClientId][op.RequestId]
 		if exists {
 			c <- msg
@@ -520,8 +606,8 @@ func (kv *ShardKV) snapshot(index int) {
 		return
 	}
 	snapshot := Snapshot{
-		Values:               kv.kvStore,
-		LastRequestForClient: kv.lastRequestForClient,
+		Values:                      kv.kvStore,
+		LastRequestForClientInShard: kv.lastRequestForClientInShard,
 	}
 	var buffer bytes.Buffer
 	encoder := labgob.NewEncoder(&buffer)
@@ -546,7 +632,7 @@ func (kv *ShardKV) restoreFromSnapshot(data []byte) {
 		log.Fatalf("Server %d restoreFromSnapshot error %v", kv.me, err)
 	}
 	kv.kvStore = snapshot.Values
-	kv.lastRequestForClient = snapshot.LastRequestForClient
+	kv.lastRequestForClientInShard = snapshot.LastRequestForClientInShard
 	DPrintf("After snapshot %v\n", kv.kvStore)
 }
 

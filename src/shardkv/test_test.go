@@ -184,6 +184,7 @@ func TestJoinLeave5B(t *testing.T) {
 
 	// adiciona um gid
 	cfg.join(0)
+	DPrintf("After Join 0")
 
 	n := 10
 	ka := make([]string, n)
@@ -200,6 +201,7 @@ func TestJoinLeave5B(t *testing.T) {
 
 	// outro GID entra, deve distribuir
 	cfg.join(1)
+	DPrintf("After Join 1")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -209,6 +211,7 @@ func TestJoinLeave5B(t *testing.T) {
 	}
 
 	cfg.leave(0)
+	DPrintf("After Leave 0")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -221,7 +224,9 @@ func TestJoinLeave5B(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	cfg.checklogs()
+	DPrintf("After check logs")
 	cfg.ShutdownGroup(0)
+	DPrintf("Desliga 0")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
