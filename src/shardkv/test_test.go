@@ -243,6 +243,7 @@ func TestSnapshot5B(t *testing.T) {
 
 	ck := cfg.makeClient(cfg.ctl)
 
+	// firt config
 	cfg.join(0)
 	DPrintf("after first join")
 
@@ -258,10 +259,13 @@ func TestSnapshot5B(t *testing.T) {
 		check(t, ck, ka[i], va[i])
 	}
 
+	// second config
 	cfg.join(1)
 	DPrintf("after second join")
+	// thrid config
 	cfg.join(2)
 	DPrintf("after third join")
+	// fourth config
 	cfg.leave(0)
 	DPrintf("after first leave")
 
@@ -272,9 +276,12 @@ func TestSnapshot5B(t *testing.T) {
 		va[i] += x
 	}
 
+	// fiveth config
 	cfg.leave(1)
 	DPrintf("after second leave")
+	// sixth config
 	cfg.join(0)
+	// todo o problema está aqui... depois que entra o gid 0 entra em deadlock
 	DPrintf("after gid 0 joins again")
 
 	for i := 0; i < n; i++ {
@@ -283,7 +290,6 @@ func TestSnapshot5B(t *testing.T) {
 		ck.Append(ka[i], x)
 		va[i] += x
 	}
-
 	DPrintf("before first sleep")
 	time.Sleep(1 * time.Second)
 
@@ -300,10 +306,12 @@ func TestSnapshot5B(t *testing.T) {
 	cfg.ShutdownGroup(0)
 	cfg.ShutdownGroup(1)
 	cfg.ShutdownGroup(2)
+	DPrintf("after shutdown")
 
 	cfg.StartGroup(0)
 	cfg.StartGroup(1)
 	cfg.StartGroup(2)
+	DPrintf("after restart")
 
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])

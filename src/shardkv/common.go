@@ -55,10 +55,11 @@ type GetReply struct {
 }
 
 type MoveShardArgs struct {
-	Err                         Err
-	ConfigId                    int
-	Values                      map[string]string
-	LastRequestForClientInShard map[int]map[int64]int64
+	Err                  Err
+	ConfigId             int
+	ShardId              int
+	Values               map[string]string
+	LastRequestForClient map[int64]int64 // clientId -> lastRequestId for this shard
 }
 
 type MoveShardsReply struct {
