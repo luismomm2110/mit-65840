@@ -14,6 +14,7 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrNotReady    = "ErrNotReady"
 )
 
 type Err string
@@ -64,4 +65,16 @@ type MoveShardArgs struct {
 
 type MoveShardsReply struct {
 	Err Err
+}
+
+type RequestShardArgs struct {
+	ConfigId     int // which config transition we're requesting for
+	ShardId      int // which shard to request
+	RequestorGid int // gid of the group requesting the shard
+}
+
+type RequestShardReply struct {
+	Err                  Err               // OK, ErrNotReady, ErrWrongGroup
+	Values               map[string]string // KV data for this shard
+	LastRequestForClient map[int64]int64   // duplicate detection state
 }

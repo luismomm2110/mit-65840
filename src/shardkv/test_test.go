@@ -342,6 +342,7 @@ func TestMissChange5B(t *testing.T) {
 		check(t, ck, ka[i], va[i])
 	}
 
+	// config 1
 	cfg.join(1)
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
@@ -354,17 +355,16 @@ func TestMissChange5B(t *testing.T) {
 		check(t, ck, ka[i], va[i])
 	}
 
+	// config 2
 	cfg.join(2)
+	// config 3
 	cfg.leave(1)
+	// config 4
 	cfg.leave(0)
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 	}
 
-	// ate aqui teve join 0, 1, desligou o primeiro de 0, o primeiro de 1 e o primeiro de 2
-	// dai join 2, depois leave 1, depois leave 0
-	// então só tem o 2
-	// esta na config 5
 	for i := 0; i < n; i++ {
 		check(t, ck, ka[i], va[i])
 		x := randstring(20)
@@ -372,6 +372,7 @@ func TestMissChange5B(t *testing.T) {
 		va[i] += x
 	}
 
+	// config 5
 	cfg.join(1)
 
 	for i := 0; i < n; i++ {
@@ -398,7 +399,9 @@ func TestMissChange5B(t *testing.T) {
 	cfg.ShutdownServer(1, 1)
 	cfg.ShutdownServer(2, 1)
 
+	// config 6
 	cfg.join(0)
+	// config 7
 	cfg.leave(2)
 
 	for i := 0; i < n; i++ {

@@ -320,12 +320,14 @@ func (kv *ShardKV) checkConfig() {
 		}
 		time.Sleep(100 * time.Millisecond)
 		//DPrintf("Server %d checkConfig ends", kv.me)
+		kv.mu.Lock()
 		var lastConfigNum int
 		if kv.lastConfig.Num == 0 {
 			lastConfigNum = 1
 		} else {
 			lastConfigNum = kv.lastConfig.Num + 1
 		}
+		kv.mu.Unlock()
 
 		newConfig := kv.mck.Query(lastConfigNum)
 		kv.mu.Lock()
@@ -347,6 +349,7 @@ func (kv *ShardKV) checkConfig() {
 		}
 		DPrintf("server %d gid %d cfg %d: queried config %d got config %v", kv.me, kv.gid, kv.lastConfig.Num, lastConfigNum, newConfig)
 		_, _, isLeader := kv.rf.Start(op)
+		DPrintf("server %d gid %d cfg %d: applied config %d and is leader %v", kv.me, kv.gid, kv.lastConfig.Num, lastConfigNum, isLeader)
 		if !isLeader {
 			kv.mu.Unlock()
 			continue
@@ -355,149 +358,172 @@ func (kv *ShardKV) checkConfig() {
 	}
 }
 
-// RPC to move shard
-func (kv *ShardKV) MoveShard(args *MoveShardArgs, reply *MoveShardsReply) {
+func (kv *ShardKV) RequestShard(args *RequestShardArgs, reply *RequestShardReply) {
 	kv.mu.Lock()
-	op := Op{
-		ConfigId:             args.ConfigId,
-		ShardId:              args.ShardId,
-		KeyValue:             args.Values,
-		OpType:               OpTypeMoveShard,
-		LastRequestForClient: args.LastRequestForClient,
-	}
-	DPrintf("server %d gid %d cfg %d: MoveShard RPC received, shard %d with values %v (args.ConfigId=%d)", kv.me, kv.gid, kv.lastConfig.Num, args.ShardId, args.Values, args.ConfigId)
-	if kv.lastConfigForShard[op.ShardId] >= op.ConfigId {
-		DPrintf("server %d gid %d cfg %d: MoveShard DUPLICATE shard %d configId %d already applied (last configId for this shard: %d), returning OK", kv.me, kv.gid, kv.lastConfig.Num, args.ShardId, args.ConfigId, kv.lastConfigForShard[op.ShardId])
-		kv.mu.Unlock()
-		reply.Err = OK
+	defer kv.mu.Unlock()
+
+	DPrintf("server %d gid %d cfg %d: RequestShard RPC received FROM gid %d for shard %d configId %d (lastConfigForShard[%d]=%d)", kv.me, kv.gid, kv.lastConfig.Num, args.RequestorGid, args.ShardId, args.ConfigId, args.ShardId, kv.lastConfigForShard[args.ShardId])
+
+	if kv.lastConfigForShard[args.ShardId] < args.ConfigId-1 {
+		DPrintf("server %d gid %d cfg %d: RequestShard NOT READY for gid %d - shard %d at config %d, need %d", kv.me, kv.gid, kv.lastConfig.Num, args.RequestorGid, args.ShardId, kv.lastConfigForShard[args.ShardId], args.ConfigId-1)
+		reply.Err = ErrNotReady
 		return
 	}
-	_, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		kv.mu.Unlock()
-		return
+
+	reply.Values = make(map[string]string)
+	for k, v := range kv.kvStore {
+		if key2shard(k) == args.ShardId {
+			reply.Values[k] = v
+		}
 	}
-	DPrintf("server %d gid %d cfg %d: finished MoveShard RPC, shard %d with values %v", kv.me, kv.gid, kv.lastConfig.Num, args.ShardId, args.Values)
-	kv.mu.Unlock()
+
+	reply.LastRequestForClient = make(map[int64]int64)
+	if clientMap, ok := kv.lastRequestForClientInShard[args.ShardId]; ok {
+		for clientId, reqId := range clientMap {
+			reply.LastRequestForClient[clientId] = reqId
+		}
+	}
+
+	DPrintf("server %d gid %d cfg %d: RequestShard OK TO gid %d for shard %d configId %d, returning %d keys", kv.me, kv.gid, kv.lastConfig.Num, args.RequestorGid, args.ShardId, args.ConfigId, len(reply.Values))
 	reply.Err = OK
+}
+
+// Pull shard data from old owner (runs as goroutine)
+func (kv *ShardKV) pullShard(shardId int, oldConfig, newConfig shardctrler.Config) {
+	DPrintf("server %d gid %d cfg %d: pullShard starting for shard %d (oldConfig %d -> newConfig %d)", kv.me, kv.gid, kv.lastConfig.Num, shardId, oldConfig.Num, newConfig.Num)
+
+	// Find old owner
+	oldGid := oldConfig.Shards[shardId]
+	if oldGid == 0 || oldGid == kv.gid {
+		// No previous owner or we already own it - unblock immediately with empty data
+		DPrintf("server %d gid %d cfg %d: pullShard shard %d has no previous owner (oldGid=%d), submitting empty MoveShard TO gid %d", kv.me, kv.gid, kv.lastConfig.Num, shardId, oldGid, kv.gid)
+		kv.mu.Lock()
+		op := Op{
+			OpType:               OpTypeMoveShard,
+			ConfigId:             newConfig.Num,
+			ShardId:              shardId,
+			KeyValue:             make(map[string]string),
+			LastRequestForClient: make(map[int64]int64),
+		}
+		kv.rf.Start(op)
+		kv.mu.Unlock()
+		return
+	}
+
+	servers := oldConfig.Groups[oldGid]
+	if servers == nil {
+		// Old group was never in any config (shouldn't happen) - unblock with empty data
+		DPrintf("server %d gid %d cfg %d: pullShard shard %d old group %d not in oldConfig, submitting empty MoveShard TO gid %d", kv.me, kv.gid, kv.lastConfig.Num, shardId, oldGid, kv.gid)
+		kv.mu.Lock()
+		op := Op{
+			OpType:               OpTypeMoveShard,
+			ConfigId:             newConfig.Num,
+			ShardId:              shardId,
+			KeyValue:             make(map[string]string),
+			LastRequestForClient: make(map[int64]int64),
+		}
+		kv.rf.Start(op)
+		kv.mu.Unlock()
+		return
+	}
+
+	args := RequestShardArgs{
+		ConfigId:     newConfig.Num,
+		ShardId:      shardId,
+		RequestorGid: kv.gid,
+	}
+
+	// Retry loop with exponential backoff
+	backoff := 10 * time.Millisecond
+	for !kv.killed() {
+		// Try each server in the old owner group
+		for si := 0; si < len(servers); si++ {
+			reply := RequestShardReply{}
+			srv := kv.make_end(servers[si])
+
+			kv.mu.Lock()
+			DPrintf("server %d gid %d cfg %d: pullShard sending RequestShard FROM gid %d TO gid %d server %d for shard %d configId %d", kv.me, kv.gid, kv.lastConfig.Num, kv.gid, oldGid, si, shardId, newConfig.Num)
+			kv.mu.Unlock()
+
+			okCh := make(chan bool, 1)
+			go func() {
+				okCh <- srv.Call("ShardKV.RequestShard", &args, &reply)
+			}()
+
+			var ok bool
+			select {
+			case ok = <-okCh:
+			case <-time.After(100 * time.Millisecond):
+				ok = false
+				DPrintf("server %d gid %d cfg %d: pullShard timeout for shard %d from gid %d server %d", kv.me, kv.gid, kv.lastConfig.Num, shardId, oldGid, si)
+			}
+
+			if ok && reply.Err == OK {
+				// Got the data! Submit to Raft
+				DPrintf("server %d gid %d cfg %d: pullShard SUCCESS for shard %d, got %d keys FROM gid %d TO gid %d, submitting MoveShard op", kv.me, kv.gid, kv.lastConfig.Num, shardId, len(reply.Values), oldGid, kv.gid)
+				kv.mu.Lock()
+				op := Op{
+					OpType:               OpTypeMoveShard,
+					ConfigId:             newConfig.Num,
+					ShardId:              shardId,
+					KeyValue:             reply.Values,
+					LastRequestForClient: reply.LastRequestForClient,
+				}
+				kv.rf.Start(op)
+				kv.mu.Unlock()
+				return // Success!
+			} else if ok && reply.Err == ErrNotReady {
+				DPrintf("server %d gid %d cfg %d: pullShard shard %d FROM gid %d server %d NOT READY", kv.me, kv.gid, kv.lastConfig.Num, shardId, oldGid, si)
+			}
+		}
+
+		// All servers failed or returned ErrNotReady - retry with backoff
+		DPrintf("server %d gid %d cfg %d: pullShard shard %d failed, retrying after %v", kv.me, kv.gid, kv.lastConfig.Num, shardId, backoff)
+		time.Sleep(backoff)
+		if backoff < 1*time.Second {
+			backoff *= 2
+		}
+	}
 }
 
 // need to be locked
 func (kv *ShardKV) changeConfig(newConfig shardctrler.Config) {
-
-	//IMPORTANTE AVISO
-	//You'll need to provide at-most-once semantics (duplicate detection) for client requests across shard movement.
-
-	//If one of your RPC handlers includes in its reply a map (e.g. a key/value map) that's part of your server's state, you may get bugs due to races.
-	//The RPC system has to read the map in order to send it to the caller, but it isn't holding a lock that covers the map.
-	//Your server, however, may proceed to modify the same map while the RPC system is reading it. The solution is for the RPC handler to include a copy of the map in the reply.
-	//  If you put a map or a slice in a Raft log entry, and your key/value server subsequently sees the entry on the applyCh and
-	//T saves a reference to the map/slice in your key/value server's state,
-	////T you may have a race. Make a copy of the map/slice, and store the copy in your key/value server's state.
-	////The race is between your key/value server modifying the map/slice and Raft reading it while persisting its log.
-	//
-	//for {
-	//	// PSEUDOCODIGO
-	//	// pego meus shards atuais e que não são mais meus
 	if newConfig.Num == 1 {
+		// First config - initialize all shards
+		for key := range kv.lastConfigForShard {
+			kv.lastConfigForShard[key] = newConfig.Num
+		}
 		kv.lastConfig = newConfig
 		DPrintf("server %d gid %d cfg %d: setting first config %v", kv.me, kv.gid, kv.lastConfig.Num, newConfig)
 		return
 	}
+
 	DPrintf("server %d gid %d cfg %d: applying config change to config %v", kv.me, kv.gid, kv.lastConfig.Num, newConfig)
 	gained, _ := kv.shardChanges(newConfig)
+
+	// Block gained shards
 	for _, shard := range gained {
 		kv.shardReady[shard] = false
 		kv.shardReadyCh[shard] = make(chan struct{})
 		DPrintf("server %d gid %d cfg %d: blocking shard %d (gained, waiting for data) in newConfig %d", kv.me, kv.gid, kv.lastConfig.Num, shard, newConfig.Num)
 	}
 
-	replacedShards := kv.replacedShards(newConfig)
+	// Update lastConfigForShard for shards we continue to own (not gained or lost)
+	for i := 0; i < shardctrler.NShards; i++ {
+		if kv.lastConfig.Shards[i] == kv.gid && newConfig.Shards[i] == kv.gid {
+			// We owned this shard before and still own it - update to new config
+			kv.lastConfigForShard[i] = newConfig.Num
+			DPrintf("server %d gid %d cfg %d: shard %d continues ownership, updating lastConfigForShard to %d", kv.me, kv.gid, kv.lastConfig.Num, i, newConfig.Num)
+		}
+	}
+
+	oldConfig := kv.lastConfig
 	kv.lastConfig = newConfig
-	if len(replacedShards) == 0 {
-		return
+
+	// Launch pull goroutines for gained shards
+	for _, shardId := range gained {
+		go kv.pullShard(shardId, oldConfig, newConfig)
 	}
-	gidsToReplacedShards := make(map[int][]int)
-	// gids dos shards que preciso mandar
-	for _, shard := range replacedShards {
-		gid := newConfig.Shards[shard]
-		DPrintf("server %d gid %d cfg %d: found target gid %d for shard %d", kv.me, kv.gid, kv.lastConfig.Num, gid, shard)
-		_, ok := gidsToReplacedShards[gid]
-		if !ok {
-			gidsToReplacedShards[gid] = []int{shard}
-		} else {
-			gidsToReplacedShards[gid] = append(gidsToReplacedShards[gid], shard)
-		}
-	}
-
-	DPrintf("server %d gid %d cfg %d: when changing to newConfig %d has kvStore %v", kv.me, kv.gid, kv.lastConfig.Num, newConfig.Num, kv.kvStore)
-	DPrintf("server %d gid %d cfg %d: change config got newConfig %v and gidsToReplacedShards %v", kv.me, kv.gid, kv.lastConfig.Num, newConfig, gidsToReplacedShards)
-
-	// Send shards in parallel
-	var wg sync.WaitGroup
-	for gid, shards := range gidsToReplacedShards {
-		if gid == kv.gid {
-			continue
-		}
-		servers, ok := newConfig.Groups[gid]
-		if !ok {
-			continue
-		}
-		// Send each shard in parallel
-		for _, shardId := range shards {
-			// Build map with only keys for this shard
-			mapToSend := make(map[string]string)
-			for k, v := range kv.kvStore {
-				if key2shard(k) == shardId {
-					mapToSend[k] = v
-				}
-			}
-			// Build lastRequestForClient for this shard only
-			lastRequestToSend := make(map[int64]int64)
-			if clientMap, ok := kv.lastRequestForClientInShard[shardId]; ok {
-				for clientId, reqId := range clientMap {
-					lastRequestToSend[clientId] = reqId
-				}
-			}
-
-			args := MoveShardArgs{
-				ConfigId:             newConfig.Num,
-				ShardId:              shardId,
-				Values:               mapToSend,
-				LastRequestForClient: lastRequestToSend,
-			}
-
-			wg.Add(1)
-			go func(shardId int, servers []string, args MoveShardArgs) {
-				defer wg.Done()
-				// Try each server in the group
-				for offset := 0; offset < len(servers); offset++ {
-					reply := MoveShardsReply{}
-					okCh := make(chan bool)
-					go func(offset int) {
-						srv := kv.make_end(servers[offset])
-						DPrintf("server %d gid %d cfg %d: sending MoveShard shard %d with values %v configId %d to server %d", kv.me, kv.gid, kv.lastConfig.Num, shardId, args.Values, args.ConfigId, offset)
-						okCh <- srv.Call("ShardKV.MoveShard", &args, &reply)
-					}(offset)
-					select {
-					case ok := <-okCh:
-						DPrintf("server %d gid %d cfg %d: got reply %v for shard %d", kv.me, kv.gid, kv.lastConfig.Num, reply, shardId)
-						if ok && reply.Err == OK {
-							DPrintf("server %d gid %d cfg %d: completed MoveShard shard %d to server %d", kv.me, kv.gid, kv.lastConfig.Num, shardId, offset)
-							return // Success
-						}
-						if ok && reply.Err == ErrWrongLeader {
-							DPrintf("server %d gid %d cfg %d: found another leader in MoveShard response for shard %d server %d", kv.me, kv.gid, kv.lastConfig.Num, shardId, offset)
-						}
-					case <-time.After(20 * time.Millisecond):
-						DPrintf("server %d gid %d cfg %d: MoveShard shard %d to server %d timeout", kv.me, kv.gid, kv.lastConfig.Num, shardId, offset)
-					}
-				}
-			}(shardId, servers, args)
-		}
-	}
-	wg.Wait()
 }
 
 // shardChanges returns which shards were gained and which were lost
@@ -574,8 +600,8 @@ func (kv *ShardKV) apply() {
 		if op.OpType == OpTypeMoveShard {
 			shardId := op.ShardId
 			receivedKvs := op.KeyValue
-			DPrintf("server %d gid %d cfg %d: applying shard move configId %d shard %d with values %v", kv.me, kv.gid, kv.lastConfig.Num, op.ConfigId, shardId, receivedKvs)
-			DPrintf("server %d gid %d cfg %d: kvStore before resharding %v", kv.me, kv.gid, kv.lastConfig.Num, kv.kvStore)
+			DPrintf("server %d gid %d cfg %d: applying MoveShard TO gid %d for shard %d configId %d with %d keys", kv.me, kv.gid, kv.lastConfig.Num, kv.gid, shardId, op.ConfigId, len(receivedKvs))
+			DPrintf("server %d gid %d cfg %d: kvStore before MoveShard %v", kv.me, kv.gid, kv.lastConfig.Num, kv.kvStore)
 			for k, v := range receivedKvs {
 				kv.kvStore[k] = v
 			}
@@ -590,12 +616,12 @@ func (kv *ShardKV) apply() {
 			}
 			// Unblock this shard
 			if !kv.shardReady[shardId] {
-				DPrintf("server %d gid %d cfg %d: unblocking shard %d (data received)", kv.me, kv.gid, kv.lastConfig.Num, shardId)
+				DPrintf("server %d gid %d cfg %d: MoveShard COMPLETE - unblocking shard %d (received by gid %d)", kv.me, kv.gid, kv.lastConfig.Num, shardId, kv.gid)
 				kv.shardReady[shardId] = true
 				kv.lastConfigForShard[shardId] = kv.lastConfig.Num
 				close(kv.shardReadyCh[shardId])
 			}
-			DPrintf("server %d gid %d cfg %d: kvStore after resharding %v configId %d cmdIndex %d", kv.me, kv.gid, kv.lastConfig.Num, kv.kvStore, op.ConfigId, msg.CommandIndex)
+			DPrintf("server %d gid %d cfg %d: kvStore after MoveShard: %v (configId %d cmdIndex %d)", kv.me, kv.gid, kv.lastConfig.Num, kv.kvStore, op.ConfigId, msg.CommandIndex)
 			kv.mu.Unlock()
 			continue
 		}
@@ -672,6 +698,17 @@ func (kv *ShardKV) restoreFromSnapshot(data []byte) {
 	kv.lastConfigForShard = snapshot.LastConfigForShard
 	kv.lastConfig = snapshot.LastConfig
 	DPrintf("server %d gid %d cfg %d: restored from snapshot, kvStore=%v", kv.me, kv.gid, kv.lastConfig.Num, kv.kvStore)
+
+	// Restart pull goroutines for blocked shards
+	// Note: We need to restart pulls because they may have been interrupted
+	// However, we don't have oldConfig saved, so we use lastConfig
+	// This works because blocked shards are waiting for data from previous config
+	for i := 0; i < shardctrler.NShards; i++ {
+		if !kv.shardReady[i] && kv.isMyShard(i) {
+			DPrintf("server %d gid %d cfg %d: restarting pull for blocked shard %d after snapshot restore", kv.me, kv.gid, kv.lastConfig.Num, i)
+			go kv.pullShard(i, kv.lastConfig, kv.lastConfig)
+		}
+	}
 }
 
 func (kv *ShardKV) killed() bool {
